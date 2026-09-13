@@ -15,3 +15,4 @@
 - 完整 PostgreSQL 集成验证使用临时本地容器，仅用于本次测试，验证完成后移除。
 - Oracle3 当前部署目录为 `/opt/1panel/docker/compose/subai`，线上提交为 `1683770886be9c13de51a0ae531d33ead5d84271`，服务健康、迁移为 9 项。该次更新遵循用户要求，不创建备份。
 - 新版 `7809b510` 无新增迁移，修复远程 Codex OAuth 的授权地址、公共客户端标识和手工 localhost 回调流程。Oracle3 原有 OAuth 环境变量会覆盖新默认值，部署时必须更新四个 `SUBAI_OAUTH_*` 值；不需要开放 1455 端口。
+- `Makefile` 的 `ci-watch` 仅取 `main` 最近一次工作流，推送后存在 GitHub Actions 尚未入列的竞态。本次错误选中了旧提交 `3c782be` 的成功任务，导致 Oracle3 拉取的仍是旧 `latest`。发布前必须按 `git rev-parse HEAD` 精确等待对应 `headSha` 的工作流。

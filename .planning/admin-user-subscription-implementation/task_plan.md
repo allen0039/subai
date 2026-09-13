@@ -17,6 +17,7 @@
 | 6 | 回归测试、迁移兼容与视觉检查 | complete |
 | 7 | Oracle3 生产部署升级至最新仓库提交 | complete |
 | 8 | 按 RELEASE.md 推送 GitHub、发布 Docker Hub 并更新 Oracle3 | in_progress |
+| 9 | 修复发布流程中 CI 运行选择的竞态 | in_progress |
 
 ## 已知约束
 
@@ -37,3 +38,4 @@
 | 问题 | 处理 |
 |---|---|
 | 初始管理员密码登录返回 401 | 当前数据库管理员为 `allen0529`，且成员版本已变更；说明初始密码已被正常替换。未改动凭据。 |
+| `make deploy` 等待上一轮 CI | 新推送后 Actions 记录尚未出现，现有 `ci-watch` 取到了上一轮已完成任务；改为按当前提交 SHA 等待。 |

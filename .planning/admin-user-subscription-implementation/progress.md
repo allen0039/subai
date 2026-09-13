@@ -33,3 +33,7 @@
 - 用户指定后续发布一律按 `docs/RELEASE.md` 执行，并要求本次推送本地仓库、发布 Docker 镜像。
 - 本次只有额度界面图标中文化的 UI 修复，按发布规范将版本从 `0.1.0` 升至 `0.1.1`。
 - GitHub CLI 已以 `allen0039` 登录；待完成 lint、单元测试及前端构建后，提交并执行 `make deploy`。
+- 发布提交 `273b503` 已推送；lint、单元测试和前端构建通过。
+- `make deploy` 发现 CI 运行选择竞态：读取到了旧提交 `3c782be` 的成功任务，Docker Hub 尚未产生 `0.1.1`，Oracle3 因此仍是旧镜像。当前正在按新提交 SHA 精确等待 CI，完成后执行 `make pull-update`。
+- `273b503` 对应的 GitHub Actions 已成功，Docker Hub 已发布 `0.1.1`、`sha-273b503…` 与 `latest`；已通过 `make pull-update` 切换 Oracle3，服务健康。
+- 已修复 `Makefile`：`ci-watch` 轮询当前完整提交 SHA 的工作流，`pull-update` 成功后写入 `DEPLOYED_COMMIT`；使用已完成的 `273b503` CI 任务验证了新等待逻辑。

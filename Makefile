@@ -16,16 +16,23 @@ deploy:
 	@test -z "$$(git status --porcelain)" || (echo "working tree not clean; commit first" && exit 1)
 	git push origin main
 	$(MAKE) ci-watch
-	ssh oracle3 'cd /opt/1panel/docker/compose/subai && docker compose pull server && docker compose up -d && docker ps --filter name=subai-server --format "{{.Image}} {{.Status}}"'
+	$(MAKE) pull-update
 
 # Pull the newest GHCR image on Oracle3 (use after CI has already published).
 pull-update:
-	ssh oracle3 'cd /opt/1panel/docker/compose/subai && docker compose pull server && docker compose up -d && docker ps --filter name=subai-server --format "{{.Image}} {{.Status}}"'
+	@sha=$$(git rev-parse HEAD); \
+	ssh oracle3 "cd /opt/1panel/docker/compose/subai && docker compose pull server && docker compose up -d && printf '%s\\n' '$$sha' > DEPLOYED_COMMIT && docker ps --filter name=subai-server --format '{{.Image}} {{.Status}}'"
 
 # Watch the latest CI run for the current commit until it completes.
 ci-watch:
-	@run=$$(gh run list --repo allen0039/subai --branch main --limit 1 --json databaseId -q '.[0].databaseId'); \
-	gh run watch $$run --repo allen0039/subai --exit-status
+	@sha=$$(git rev-parse HEAD); run=""; \
+	for attempt in $$(seq 1 30); do \
+		run=$$(gh run list --repo allen0039/subai --commit "$$sha" --limit 1 --json databaseId -q '.[0].databaseId'); \
+		[ -n "$$run" ] && break; \
+		sleep 2; \
+	done; \
+	[ -n "$$run" ] || (echo "no GitHub Actions run found for $$sha" && exit 1); \
+	gh run watch "$$run" --repo allen0039/subai --exit-status
 
 help:
 	@echo "lint              - go vet + gofmt check"
