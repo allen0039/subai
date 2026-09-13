@@ -27,3 +27,9 @@
 - 已同步代码、更新 Oracle3 的 OAuth 授权 URL、公共客户端 ID 与 localhost 回调地址，并成功构建、重建 server 容器。
 - 最终部署提交：`7809b510dcd8ae28eedc075d0b4c247692502fcb`；服务和 PostgreSQL 均 healthy，`/healthz` 返回 `ok`，数据库迁移数为 9。
 - 初始管理员密码文件登录返回 401；只读核对确认当前有效管理员为 `allen0529`，应使用其现有密码登录，未重置凭据。
+
+## 2026-09-13 — GitHub 与 Docker Hub 发布
+
+- 用户指定后续发布一律按 `docs/RELEASE.md` 执行，并要求本次推送本地仓库、发布 Docker 镜像。
+- 本次只有额度界面图标中文化的 UI 修复，按发布规范将版本从 `0.1.0` 升至 `0.1.1`。
+- GitHub CLI 已以 `allen0039` 登录；待完成 lint、单元测试及前端构建后，提交并执行 `make deploy`。

@@ -16,6 +16,7 @@
 | 5 | 管理端与用户端界面重构 | complete |
 | 6 | 回归测试、迁移兼容与视觉检查 | complete |
 | 7 | Oracle3 生产部署升级至最新仓库提交 | complete |
+| 8 | 按 RELEASE.md 推送 GitHub、发布 Docker Hub 并更新 Oracle3 | in_progress |
 
 ## 已知约束
 

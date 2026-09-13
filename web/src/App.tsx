@@ -194,7 +194,7 @@ const QuotaBar: React.FC<{ label: string; window?: QuotaWindow }> = ({ label: ti
   const display = remaining == null ? "—" : remaining.toFixed(remaining % 1 ? 1 : 0);
   return <div className={`quota-window quota-window-${tone}`}>
     <div className="quota-window-head">
-      <div><span className="quota-window-icon" aria-hidden="true">{title.startsWith("五") ? "5h" : "7d"}</span><div><b>{title}</b><small>{window ? "滚动用量窗口" : "暂无窗口数据"}</small></div></div>
+      <div><span className="quota-window-icon" aria-hidden="true">{title.startsWith("五") ? "时" : "周"}</span><div><b>{title}</b><small>{window ? "滚动用量窗口" : "暂无窗口数据"}</small></div></div>
       <div className="quota-percent"><span>剩余</span><strong>{display}{remaining != null && <em>%</em>}</strong></div>
     </div>
     <div className="quota-progress" aria-label={`${title}${remaining == null ? "暂无数据" : `剩余 ${remaining}%`}`}><span style={{width: `${remaining ?? 0}%`}} /></div>
@@ -224,7 +224,7 @@ const QuotaActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload 
     {open && <Modal className="quota-modal" title="官方账号额度" onClose={() => setOpen(false)} onSubmit={refresh} submitLabel={refreshing ? "正在同步…" : "刷新官方额度"} submitDisabled={refreshing}>
       <div className="quota-details">
         <section className="quota-account-head">
-          <div className="quota-account-mark" aria-hidden="true">AI</div>
+          <div className="quota-account-mark" aria-hidden="true">智</div>
           <div className="quota-account-copy"><span>当前账号</span><b>{row.quota?.email || row.quota?.upstream_account_id || row.label}</b><small>{row.label}</small></div>
           <span className="quota-plan">{planName(row.quota?.plan_type)}</span>
         </section>
