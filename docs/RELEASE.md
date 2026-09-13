@@ -1,7 +1,7 @@
 # 发布流程（GitHub + Docker Hub → Oracle3）
 
 每次对外发布新版本之前，按本文档的顺序执行。整套流程的自动化已就绪：
-push 到 `main` 触发 GitHub Actions 构建镜像并同时发布到 GHCR 和 Docker Hub，
+push 到 `main` 触发 GitHub Actions 构建镜像并发布到 Docker Hub，
 服务器只从 Docker Hub 拉镜像更新。
 
 ## 0. 前置条件（只需检查一次）

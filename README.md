@@ -4,7 +4,7 @@
 
 **当前状态**：第一版实现完成（P1–P5 全部、P6 部署框架），真实联调项（P0-01..04）因缺少真实凭证标记 blocked。开始前必读 [docs/REVIEW_HANDOFF.md](docs/REVIEW_HANDOFF.md) 与 [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)。
 
-**发布部署**：push 到 `main` 自动构建镜像并发布到 Docker Hub / GHCR，Oracle3 拉镜像更新。发布流程见 [docs/RELEASE.md](docs/RELEASE.md)，日常发布一条命令：`make deploy`。
+**发布部署**：push 到 `main` 自动构建镜像并发布到 Docker Hub，Oracle3 拉镜像更新。发布流程见 [docs/RELEASE.md](docs/RELEASE.md)，日常发布一条命令：`make deploy`。
 
 ## 架构
 
