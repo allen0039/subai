@@ -44,9 +44,16 @@ func (s *Server) listBudgetPolicies(w http.ResponseWriter, r *http.Request) {
 			"id": id, "owner_type": ownerType, "owner_member_id": member, "owner_key_id": key,
 			"owner_account_id": account, "owner_group_id": group, "period": period, "timezone": tz,
 			"mode": mode, "amount": amount, "percent_bps": bps, "base_policy_id": base, "status": status, "version": version,
+			"label": budgetPolicyLabel(ownerType, period, amount),
 		})
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})
+}
+
+func budgetPolicyLabel(ownerType, period, amount string) string {
+	owners := map[string]string{"member": "用户", "key": "接口密钥", "account": "上游账号", "group": "账号池", "key_account": "接口密钥与上游账号", "key_group": "接口密钥与账号池"}
+	periods := map[string]string{"day": "每日", "week": "每周", "month": "每月"}
+	return "预算策略（" + owners[ownerType] + "，" + periods[period] + "，" + amount + " 美元）"
 }
 
 // createBudgetPolicy validates §18.2 constraints: fixed needs amount, percent

@@ -405,11 +405,11 @@ func (s *Server) listSubscriptions(w http.ResponseWriter, r *http.Request, membe
 		where = "WHERE us.member_id=$1"
 	}
 	rows, err := s.DB.Pool.Query(r.Context(), `
-		SELECT us.id::text,us.member_id::text,p.id::text,p.name,pv.id::text,pv.version_number,us.status,us.starts_at::text,us.expires_at::text,
+		SELECT us.id::text,us.member_id::text,m.name,p.id::text,p.name,pv.id::text,pv.version_number,us.status,us.starts_at::text,us.expires_at::text,
 		COALESCE(us.concurrency_override,pv.concurrency_limit),COALESCE(us.max_keys_override,pv.max_keys),
 		COALESCE(COALESCE(us.daily_limit_override,pv.daily_limit_usd)::text,''),COALESCE(COALESCE(us.weekly_limit_override,pv.weekly_limit_usd)::text,''),COALESCE(COALESCE(us.monthly_limit_override,pv.monthly_limit_usd)::text,''),
 		COALESCE(us.allowed_models_override,pv.allowed_models),us.version,us.notes
-		FROM user_subscriptions us JOIN plan_versions pv ON pv.id=us.plan_version_id JOIN plans p ON p.id=pv.plan_id `+where+` ORDER BY us.expires_at DESC`, args...)
+		FROM user_subscriptions us JOIN members m ON m.id=us.member_id JOIN plan_versions pv ON pv.id=us.plan_version_id JOIN plans p ON p.id=pv.plan_id `+where+` ORDER BY us.expires_at DESC`, args...)
 	if err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
@@ -417,14 +417,14 @@ func (s *Server) listSubscriptions(w http.ResponseWriter, r *http.Request, membe
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, mid, pid, pname, vid, status, starts, expires, daily, weekly, monthly, notes string
+		var id, mid, memberName, pid, pname, vid, status, starts, expires, daily, weekly, monthly, notes string
 		var pv, conc, max, version int
 		var models []string
-		if err := rows.Scan(&id, &mid, &pid, &pname, &vid, &pv, &status, &starts, &expires, &conc, &max, &daily, &weekly, &monthly, &models, &version, &notes); err != nil {
+		if err := rows.Scan(&id, &mid, &memberName, &pid, &pname, &vid, &pv, &status, &starts, &expires, &conc, &max, &daily, &weekly, &monthly, &models, &version, &notes); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
-		out = append(out, map[string]any{"id": id, "member_id": mid, "plan_id": pid, "plan_name": pname, "plan_version_id": vid, "plan_version": pv, "status": availability(status, starts, expires), "starts_at": starts, "expires_at": expires, "concurrency_limit": conc, "max_keys": max, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "allowed_models": models, "version": version, "notes": notes})
+		out = append(out, map[string]any{"id": id, "member_id": mid, "member_name": memberName, "plan_id": pid, "plan_name": pname, "plan_version_id": vid, "plan_version": pv, "status": availability(status, starts, expires), "starts_at": starts, "expires_at": expires, "concurrency_limit": conc, "max_keys": max, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "allowed_models": models, "version": version, "notes": notes})
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})
 }

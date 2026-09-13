@@ -1,21 +1,24 @@
+import { errorText } from "./locale";
 // Minimal API client for the SubAI admin surface (§17.2).
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
     super(message);
     this.status = status;
+    this.name = "操作失败";
   }
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const resp = await fetch(path, {
+  let resp: Response;
+  try { resp = await fetch(path, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     credentials: "same-origin",
-  });
+  }); } catch (error) { throw new ApiError(0, errorText(error)); }
   if (resp.status === 401 && !path.endsWith("/session")) {
     throw new ApiError(401, "会话已过期，请重新登录");
   }
@@ -28,7 +31,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
   if (!resp.ok) {
     const msg = data?.error?.message ?? data?.error ?? text ?? resp.statusText;
-    throw new ApiError(resp.status, typeof msg === "string" ? msg : JSON.stringify(msg));
+    const display = data?.error?.display_message ?? errorText(msg, resp.status);
+    const reference = data?.error?.reference;
+    throw new ApiError(resp.status, display + (reference ? `（诊断编号：${reference}）` : ""));
   }
   return data as T;
 }

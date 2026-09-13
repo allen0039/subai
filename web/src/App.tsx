@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "./api";
-import { Badge, ResourcePage, Field, Column } from "./components";
+import { Badge, Modal, ResourcePage, Field, Column } from "./components";
+import { cellText, dateTime, errorText, label, money } from "./locale";
 import { AdminPlans, AdminSubscriptions, AdminUserEntitlements, MyKeys, MyOverview, MySubscriptions, SecurityPage } from "./portal";
 
 // ── Resource registry: every admin surface, driven by data (§17.2) ──────────
@@ -16,12 +17,12 @@ const membersPage = () => (
       { name: "role", label: "角色", render: (r) => <Badge value={r.role} /> },
       statusCol,
       { name: "subscription_count", label: "订阅" },
-      { name: "key_count", label: "Key" },
+      { name: "key_count", label: "接口密钥数" },
       { name: "created_at", label: "创建时间" },
     ]}
     createFields={[
       { name: "name", label: "用户名", required: true },
-      { name: "password", label: "密码", kind: "password", required: true, help: "使用 bcrypt 存储，无默认密码" },
+      { name: "password", label: "密码", kind: "password", required: true, help: "密码经过安全加密处理，不设默认密码" },
       { name: "role", label: "角色", kind: "select", options: ["member", "admin"], default: "member" },
     ]}
     editFields={[
@@ -36,17 +37,17 @@ const membersPage = () => (
 
 const clientsPage = () => (
   <ResourcePage
-    title="客户端（设备 / Agent）"
+    title="客户端（设备）"
     basePath="/api/admin/clients"
     columns={[
       { name: "name", label: "名称" },
       { name: "type", label: "类型", render: (r) => <Badge value={r.type} /> },
       statusCol,
-      { name: "member_id", label: "成员" },
-      { name: "key_count", label: "Key 数" },
+      { name: "member_name", label: "所属用户" },
+      { name: "key_count", label: "接口密钥数" },
     ]}
     createFields={[
-      { name: "member_id", label: "成员 ID", required: true, placeholder: "uuid，见成员页" },
+      { name: "member_id", label: "所属用户", kind: "select", optionsPath: "/api/admin/users", required: true },
       { name: "name", label: "名称", required: true },
       { name: "type", label: "类型", kind: "select", options: ["computer", "hermes", "cli", "other"], required: true },
       { name: "notes", label: "备注", kind: "textarea" },
@@ -55,13 +56,13 @@ const clientsPage = () => (
       { name: "status", label: "状态", kind: "select", options: ["active", "disabled"] },
       { name: "notes", label: "备注", kind: "textarea" },
     ]}
-    notice={<span className="muted small">数量不设上限；三台电脑 + 两个 Hermes 只是首批样本。</span>}
+    notice={<span className="muted small">客户端数量不设上限。</span>}
   />
 );
 
 const keysPage = () => (
   <ResourcePage
-    title="API Keys"
+    title="接口密钥"
     basePath="/api/admin/keys"
     columns={[
       { name: "name", label: "名称" },
@@ -72,8 +73,8 @@ const keysPage = () => (
       { name: "created_at", label: "创建时间" },
     ]}
     createFields={[
-      { name: "member_id", label: "成员 ID", required: true },
-      { name: "client_id", label: "客户端 ID（可选）" },
+      { name: "member_id", label: "所属用户", kind: "select", optionsPath: "/api/admin/users", required: true },
+      { name: "client_id", label: "关联客户端（可选）", kind: "select", optionsPath: "/api/admin/clients" },
       { name: "name", label: "名称", required: true },
       { name: "concurrency_limit", label: "并发上限", kind: "number", default: 1 },
       { name: "allowed_models", label: "允许模型（逗号分隔，留空=全部）", help: "逗号分隔" },
@@ -85,7 +86,8 @@ const keysPage = () => (
           className="btn small danger"
           onClick={async () => {
             if (!confirm("撤销后不可恢复，确认？")) return;
-            await api.post(`/api/admin/keys/${row.id}/revoke`);
+            try { await api.post(`/api/admin/keys/${row.id}/revoke`); }
+            catch (error) { alert(errorText(error)); return; }
             reload();
           }}
         >
@@ -105,7 +107,7 @@ const accountsPage = () => (
     basePath="/api/admin/accounts"
     columns={[
       { name: "label", label: "标签" },
-      { name: "state", label: "状态", render: (r) => <Badge value={r.state} /> },
+      { name: "state", label: "状态", render: (r) => <Badge value={r.state} domain="account" /> },
       { name: "concurrency_limit", label: "并发上限" },
       { name: "priority", label: "优先级" },
       { name: "proxy_name", label: "当前代理" },
@@ -114,11 +116,11 @@ const accountsPage = () => (
     ]}
     createFields={[
       { name: "label", label: "标签", required: true },
-      { name: "access_token", label: "Access Token", kind: "password", required: true, help: "加密存储，仅创建时输入" },
-      { name: "refresh_token", label: "Refresh Token", kind: "password" },
-      { name: "account_id", label: "上游 Account ID" },
+      { name: "access_token", label: "访问令牌", kind: "password", required: true, help: "加密保存，仅在创建时填写" },
+      { name: "refresh_token", label: "刷新令牌（可选）", kind: "password" },
+      { name: "account_id", label: "上游账号标识（可选）" },
       { name: "concurrency_limit", label: "并发上限", kind: "number", default: 1 },
-      { name: "egress_policy_id", label: "出口策略 ID（可选）" },
+      { name: "egress_policy_id", label: "出口策略（可选）", kind: "select", optionsPath: "/api/admin/egress-policies" },
     ]}
     editFields={[
       { name: "label", label: "标签", required: true },
@@ -127,22 +129,54 @@ const accountsPage = () => (
       { name: "concurrency_limit", label: "并发上限", kind: "number" },
       { name: "priority", label: "优先级", kind: "number" },
     ]}
-    rowActions={(row, reload) => <button className="btn small" onClick={async () => {
-      try {
-        const result = await api.get<{data: {reason: string}[]}>(`/api/admin/accounts/${row.id}/holds`);
-        const reasons = result.data.map(h => h.reason);
-        if (!reasons.length) { alert("没有隔离原因"); return; }
-        const reason = prompt(`隔离原因：${reasons.join("、")}。输入需解除的原因；unknown_pending 须先处置请求，reauth_required 须重新授权。`);
-        if (!reason) return;
-        const note = prompt("填写解除依据（必填）");
-        if (!note?.trim()) return;
-        await api.post(`/api/admin/accounts/${row.id}/holds`, {reason, note});
-        reload();
-      } catch (err) { alert(String(err)); }
-    }}>隔离原因 / 解除</button>}
+    rowActions={(row, reload) => <HoldActions row={row} reload={reload} />}
     notice={<OAuthStarter />}
   />
 );
+
+const releasableHoldReasons = ["over_reserve", "admin_action", "admin_pause", "legacy_review"];
+const HoldActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload }) => {
+  const [open, setOpen] = useState(false);
+  const [holds, setHolds] = useState<any[]>([]);
+  const [reason, setReason] = useState("");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState("");
+  const load = async () => {
+    try {
+      const result = await api.get<{data: any[]}>(`/api/admin/accounts/${row.id}/holds`);
+      const data = result.data ?? [];
+      setHolds(data);
+      setReason(data.find(hold => releasableHoldReasons.includes(hold.reason))?.reason ?? "");
+      setError(""); setOpen(true);
+    } catch (e) { setError(errorText(e)); setOpen(true); }
+  };
+  const release = async () => {
+    if (!reason || !note.trim()) { setError("请先选择可解除的原因并填写处理依据。"); return; }
+    try {
+      await api.post(`/api/admin/accounts/${row.id}/holds`, {reason, note: note.trim()});
+      setOpen(false); reload();
+    } catch (e) { setError(errorText(e)); }
+  };
+  return <>
+    <button className="btn small" onClick={load}>查看隔离原因</button>
+    {open && <Modal title={`账号隔离原因 · ${row.label}`} onClose={() => setOpen(false)} onSubmit={release}>
+      {error && <div className="error" role="alert">{error}</div>}
+      {!holds.length && !error && <p className="muted">该账号当前没有隔离原因。</p>}
+      {!!holds.length && <div className="hold-list">
+        {holds.map(hold => <div key={hold.reason} className="hold-item">
+          <b>{label(hold.reason)}</b>
+          <span>{releasableHoldReasons.includes(hold.reason) ? "可在确认处理后解除。" : hold.reason === "reauth_required" ? "需要重新授权后才能解除。" : "需要先在对应流程中完成处理。"}</span>
+        </div>)}
+      </div>}
+      {reason && <>
+        <label className="field"><span className="field-label">解除原因</span><select value={reason} onChange={e => setReason(e.target.value)}>
+          {holds.filter(hold => releasableHoldReasons.includes(hold.reason)).map(hold => <option key={hold.reason} value={hold.reason}>{label(hold.reason)}</option>)}
+        </select></label>
+        <label className="field"><span className="field-label">处理依据</span><textarea value={note} onChange={e => setNote(e.target.value)} rows={3} required placeholder="例如：已核对费用明细，确认可以恢复使用" /></label>
+      </>}
+    </Modal>}
+  </>;
+};
 
 const proxiesPage = () => (
   <ResourcePage
@@ -150,21 +184,21 @@ const proxiesPage = () => (
     basePath="/api/admin/proxies"
     columns={[
       { name: "name", label: "名称" },
-      { name: "kind", label: "类型" },
+      { name: "kind", label: "类型", render: (r) => label(r.kind) },
       { name: "endpoint", label: "地址" },
       statusCol,
     ]}
     createFields={[
       { name: "name", label: "名称", required: true },
       { name: "kind", label: "类型", kind: "select", options: ["direct", "http", "socks5"], required: true },
-      { name: "endpoint", label: "地址（direct 留空）", placeholder: "host:port" },
+      { name: "endpoint", label: "地址", placeholder: "主机地址:端口", help: "选择直接连接时无需填写" },
       { name: "username", label: "用户名（可选）" },
       { name: "password", label: "密码（可选）", kind: "password" },
     ]}
     editFields={[
       { name: "name", label: "名称", required: true },
       { name: "kind", label: "类型", kind: "select", options: ["direct", "http", "socks5"], required: true },
-      { name: "endpoint", label: "地址（direct 留空）", placeholder: "host:port" },
+      { name: "endpoint", label: "地址", placeholder: "主机地址:端口", help: "选择直接连接时无需填写" },
       { name: "username", label: "新用户名", help: "不修改则保留原用户名" },
       { name: "password", label: "新密码", kind: "password", help: "留空则保留原密码" },
       { name: "clear_credentials", label: "清除代理用户名和密码", kind: "checkbox" },
@@ -174,7 +208,7 @@ const proxiesPage = () => (
       <><button className="btn small danger" onClick={async () => {
         if (!confirm(`确认删除代理“${row.name}”？`)) return;
         try { await api.del(`/api/admin/proxies/${row.id}`, {version: row.version}); reload(); }
-        catch (err) { alert(String(err)); }
+        catch (err) { alert(errorText(err)); }
       }}>删除</button><button
         className="btn small"
         onClick={async () => {
@@ -182,7 +216,7 @@ const proxiesPage = () => (
             const r = await api.post<any>(`/api/admin/proxies/${row.id}/test`);
             alert(r.ok ? `探测成功 (${r.status ?? 204})` : `探测失败：${r.error}`);
             reload();
-          } catch (err) { alert(String(err)); }
+          } catch (err) { alert(errorText(err)); }
         }}
       >
         探测
@@ -198,21 +232,21 @@ const egressPage = () => (
     columns={[
       { name: "name", label: "名称" },
       { name: "primary", label: "主出口" },
-      { name: "failure_mode", label: "故障模式", render: (r) => <Badge value={r.failure_mode} /> },
-      { name: "fallbacks", label: "备用列表", render: (r) => (r.fallbacks ?? []).join(" → ") || "—" },
+      { name: "failure_mode", label: "故障处理", render: (r) => <Badge value={r.failure_mode} /> },
+      { name: "fallbacks", label: "备用代理", render: (r) => (r.fallbacks ?? []).join(" → ") || "未配置" },
     ]}
     createFields={[
       { name: "name", label: "名称", required: true },
-      { name: "primary_proxy_id", label: "主出口 Profile ID", required: true },
+      { name: "primary_proxy_id", label: "主代理", kind: "select", optionsPath: "/api/admin/proxies", required: true },
       {
         name: "failure_mode",
         label: "故障模式",
         kind: "select",
         options: ["stop", "fallback"],
         default: "stop",
-        help: "stop=故障即停；fallback=仅尝试显式备用列表，绝不自动直连",
+        help: "故障时停止会终止请求；切换备用代理只使用下方选择的代理。",
       },
-      { name: "fallback_proxy_ids", label: "备用 ID（逗号分隔）" },
+      { name: "fallback_proxy_ids", label: "备用代理", kind: "multi-select", optionsPath: "/api/admin/proxies", visibleWhen: (body) => body.failure_mode === "fallback" },
     ]}
   />
 );
@@ -240,22 +274,31 @@ const groupsPage = () => (
 const GroupAddForm: React.FC = () => <span className="muted small">账号可加入多个池；账号池变更会实时影响已绑定套餐。</span>;
 
 const GroupRowActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload }) => {
+  const [accounts, setAccounts] = React.useState<any[]>([]);
   const [accountId, setAccountId] = React.useState("");
+  const [error, setError] = React.useState("");
+  React.useEffect(() => {
+    api.get<any>("/api/admin/accounts?limit=100").then(r => {
+      const rows = (r.data ?? []).filter((account: any) => account.state === "active");
+      setAccounts(rows);
+      setAccountId(rows[0]?.id ?? "");
+    }).catch(e => setError(errorText(e)));
+  }, []);
   return (
-    <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-      <input
-        placeholder="账号ID"
+    <span className="inline-actions">
+      <select aria-label="选择要添加的账号"
         value={accountId}
         onChange={(e) => setAccountId(e.target.value)}
-        style={{ width: 220 }}
-      />
+      >
+        <option value="">请选择账号</option>
+        {accounts.map(account => <option key={account.id} value={account.id}>{account.label}</option>)}
+      </select>
       <button
         className="btn small"
         onClick={async () => {
-          if (!accountId) return alert("请输入账号 ID");
-          await api.post(`/api/admin/account-pools/${row.id}/accounts`, { account_id: accountId });
-          setAccountId("");
-          reload();
+          if (!accountId) return;
+          try { await api.post(`/api/admin/account-pools/${row.id}/accounts`, { account_id: accountId }); reload(); }
+          catch (e) { setError(errorText(e)); }
         }}
       >
         添加账号
@@ -263,13 +306,14 @@ const GroupRowActions: React.FC<{ row: any; reload: () => void }> = ({ row, relo
       <button
         className="btn small danger"
         onClick={async () => {
-          if (!confirm(`删除组 ${row.name}？`)) return;
-          await api.del(`/api/admin/account-pools/${row.id}`);
-          reload();
+          if (!confirm(`确认删除账号池“${row.name}”？`)) return;
+          try { await api.del(`/api/admin/account-pools/${row.id}`); reload(); }
+          catch (e) { setError(errorText(e)); }
         }}
       >
         删除账号池
       </button>
+      {error && <span className="error small">{error}</span>}
     </span>
   );
 };
@@ -283,8 +327,8 @@ const budgetsPage = () => (
       { name: "owner_type", label: "作用域" },
       { name: "period", label: "周期" },
       { name: "mode", label: "模式" },
-      { name: "amount", label: "固定金额 $" },
-      { name: "percent_bps", label: "百分比 bps" },
+      { name: "amount", label: "固定金额（美元）", render: r => money(r.amount, "不适用") },
+      { name: "percent_bps", label: "比例", render: r => cellText("percent_bps", r.percent_bps) },
       { name: "timezone", label: "时区" },
       statusCol,
     ]}
@@ -296,18 +340,18 @@ const budgetsPage = () => (
         options: ["member", "key", "account", "group", "key_account", "key_group"],
         required: true,
       },
-      { name: "owner_member_id", label: "成员 ID（按作用域）" },
-      { name: "owner_key_id", label: "Key ID（按作用域）" },
-      { name: "owner_account_id", label: "账号 ID（按作用域）" },
-      { name: "owner_group_id", label: "组 ID（按作用域）" },
+      { name: "owner_member_id", label: "用户", kind: "select", optionsPath: "/api/admin/users", visibleWhen: b => b.owner_type === "member" || b.owner_type === "key_account" || b.owner_type === "key_group" },
+      { name: "owner_key_id", label: "接口密钥", kind: "select", optionsPath: "/api/admin/keys", visibleWhen: b => b.owner_type === "key" || b.owner_type === "key_account" || b.owner_type === "key_group" },
+      { name: "owner_account_id", label: "上游账号", kind: "select", optionsPath: "/api/admin/accounts", visibleWhen: b => b.owner_type === "account" || b.owner_type === "key_account" },
+      { name: "owner_group_id", label: "账号池", kind: "select", optionsPath: "/api/admin/account-pools", visibleWhen: b => b.owner_type === "group" || b.owner_type === "key_group" },
       { name: "period", label: "周期", kind: "select", options: ["day", "week"], required: true },
-      { name: "timezone", label: "时区", default: "Asia/Shanghai" },
+      { name: "timezone", label: "时区", kind: "select", options: [{ value: "Asia/Shanghai", label: "北京时间" }, { value: "UTC", label: "协调世界时" }], default: "Asia/Shanghai" },
       { name: "mode", label: "模式", kind: "select", options: ["fixed", "percent"], required: true },
-      { name: "amount", label: "固定金额（mode=fixed）", placeholder: "100.00" },
-      { name: "percent_bps", label: "基点（mode=percent，2000=20%）", kind: "number" },
-      { name: "base_policy_id", label: "基础策略 ID（mode=percent 必填）" },
+      { name: "amount", label: "固定金额（美元）", placeholder: "例如：100.00", visibleWhen: b => b.mode === "fixed" },
+      { name: "percent_bps", label: "比例（%）", kind: "number", min: 0, max: 100, step: 0.01, scale: 100, visibleWhen: b => b.mode === "percent", help: "例如填写 20，表示使用基础策略金额的 20%。" },
+      { name: "base_policy_id", label: "基础预算策略", kind: "select", optionsPath: "/api/admin/budget-policies", optionsFilter: r => r.mode === "fixed" && r.status === "active", visibleWhen: b => b.mode === "percent", help: "请选择同一周期的已启用固定金额策略。" },
     ]}
-    notice={<span className="muted small">金额=NUMERIC 美元；percent 引用 fixed 基础策略；无预算覆盖的请求默认拒绝。</span>}
+    notice={<span className="muted small">金额以美元计。按比例策略基于一项固定金额策略计算；没有适用预算的请求会被拒绝。</span>}
   />
 );
 
@@ -319,11 +363,11 @@ const periodsPage = () => (
       { name: "policy_id", label: "策略" },
       { name: "period_start", label: "开始" },
       { name: "period_end", label: "结束" },
-      { name: "limit", label: "快照限额 $" },
-      { name: "spent", label: "已花 $" },
-      { name: "reserved", label: "预留 $" },
+      { name: "limit", label: "周期限额（美元）", render: r => money(r.limit, "未设置") },
+      { name: "spent", label: "已使用（美元）", render: r => money(r.spent, "0 美元") },
+      { name: "reserved", label: "已预留（美元）", render: r => money(r.reserved, "0 美元") },
     ]}
-    notice={<span className="muted small">limit_snapshot 周期内不可覆盖；spent+reserved 即为占用。</span>}
+    notice={<span className="muted small">周期限额创建后不可修改；已使用与已预留之和为当前占用额度。</span>}
   />
 );
 
@@ -335,12 +379,12 @@ const ledgerPage = () => (
       { name: "created_at", label: "时间" },
       { name: "request_id", label: "请求" },
       { name: "entry_type", label: "类型" },
-      { name: "input_tokens", label: "非缓存输入 tok" },
-      { name: "cached_input_tokens", label: "缓存 tok" },
-      { name: "output_tokens", label: "输出 tok" },
-      { name: "cost", label: "费用 $" },
+      { name: "input_tokens", label: "非缓存输入词元" },
+      { name: "cached_input_tokens", label: "缓存输入词元" },
+      { name: "output_tokens", label: "输出词元" },
+      { name: "cost", label: "费用（美元）", render: r => money(r.cost, "0 美元") },
     ]}
-    notice={<span className="muted small">追加式账本：修正通过 adjustment 行，不直接改余额。</span>}
+    notice={<span className="muted small">账本只追加记录；如需修正，会新增一条费用调整记录，不会直接修改原记录。</span>}
   />
 );
 
@@ -353,7 +397,7 @@ const pricesPage = () => (
       { name: "origin", label: "来源", render: (r) => <Badge value={r.origin} /> },
       { name: "status", label: "状态", render: (r) => <Badge value={r.status} /> },
       { name: "model_count", label: "模型数" },
-      { name: "source_url", label: "来源 URL" },
+      { name: "source_url", label: "来源地址" },
       { name: "notes", label: "说明" },
     ]}
     notice={<PricesActions />}
@@ -368,12 +412,12 @@ const PricesActions: React.FC = () => {
         className="btn"
         onClick={async () => {
           const r = await api.post<any>("/api/admin/prices/sync");
-          setMsg(`同步结果：${r.status}（官方解析器未经验证前不会自动激活）`);
+          setMsg(`同步结果：${label(r.status)}。未验证的官方数据不会自动启用。`);
         }}
       >
         同步官方价格
       </button>{" "}
-      <span className="muted small">{msg || "synthetic 版本仅用于测试，生产需要 verified official 版本"}</span>
+      <span className="muted small">{msg || "测试价格仅用于测试环境；生产环境需要已验证的官方价格。"}</span>
     </span>
   );
 };
@@ -387,14 +431,14 @@ const auditRulesPage = () => (
       { name: "category", label: "类别", render: (r) => <Badge value={r.category} /> },
       { name: "title", label: "标题" },
       { name: "action", label: "动作", render: (r) => <Badge value={r.action} /> },
-      { name: "enabled", label: "启用", render: (r) => (r.enabled ? "✓" : "✗") },
+      { name: "enabled", label: "启用", render: (r) => (r.enabled ? "已启用" : "已停用") },
       { name: "version", label: "版本" },
       { name: "source", label: "来源" },
     ]}
     editFields={[
       { name: "enabled", label: "启用", kind: "checkbox" },
       { name: "action", label: "动作", kind: "select", options: ["flag", "review", "block", "reject", "unsupported"] },
-      { name: "matcher", label: "匹配器 JSON", kind: "textarea", help: "保存前会执行完整规则编译校验" },
+      { name: "matcher", label: "匹配规则", kind: "textarea", help: "保存前会验证规则格式。" },
       { name: "message", label: "提示", kind: "textarea" },
     ]}
     notice={<RuleTester />}
@@ -415,12 +459,13 @@ const RuleTester: React.FC = () => {
         className="btn"
         onClick={async () => {
           const r = await api.post<any>("/api/admin/audit/rules/validate", { text, scope: "input" });
-          setResult(JSON.stringify(r));
+          const hitCount = Array.isArray(r.hits) ? r.hits.length : 0;
+          setResult(r.secret_blocked ? "检测到敏感凭据，规则会拦截该内容。" : hitCount ? `命中 ${hitCount} 条规则。` : "未命中规则。");
         }}
       >
         测试
       </button>
-      <code className="small">{result}</code>
+      <span className="small">{result}</span>
     </span>
   );
 };
@@ -435,38 +480,50 @@ const auditEventsPage = () => (
       { name: "decision", label: "决定", render: (r) => <Badge value={r.decision} /> },
       { name: "coverage", label: "覆盖" },
       { name: "cache_state", label: "缓存" },
-      { name: "duration_ms", label: "耗时 ms" },
+      { name: "duration_ms", label: "耗时（毫秒）" },
       { name: "summary", label: "摘要（脱敏）" },
       { name: "reviews", label: "复核", render: (r) => (r.reviews ?? []).length + " 条" },
     ]}
-    rowActions={(row, reload) => (
-      <button
-        className="btn small"
-        onClick={async () => {
-          const outcome = prompt("复核结论：confirmed_violation / false_positive / exception_created", "false_positive");
-          if (!outcome) return;
-          let exception_rule_id: string | undefined;
-          let exception_ttl_hours: number | undefined;
-          if (outcome === "exception_created") {
-            exception_rule_id = prompt("输入本事件命中的非 secret 规则 ID") || undefined;
-            if (!exception_rule_id) return;
-            const ttl = prompt("例外有效小时数（1–720）", "24");
-            exception_ttl_hours = Number(ttl);
-            if (!Number.isInteger(exception_ttl_hours) || exception_ttl_hours < 1 || exception_ttl_hours > 720) {
-              alert("有效小时数必须在 1–720 之间");
-              return;
-            }
-          }
-          await api.post(`/api/admin/audit/events/${row.id}/review`, { outcome, note: "", exception_rule_id, exception_ttl_hours });
-          reload();
-        }}
-      >
-        复核
-      </button>
-    )}
+    rowActions={(row, reload) => <AuditReviewAction row={row} reload={reload} />}
     notice={<span className="muted small">复核只记录结论或创建精确例外，绝不重放请求。</span>}
   />
 );
+
+const AuditReviewAction: React.FC<{ row: any; reload: () => void }> = ({ row, reload }) => {
+  const [open, setOpen] = useState(false);
+  const [outcome, setOutcome] = useState("false_positive");
+  const [note, setNote] = useState("");
+  const [ruleID, setRuleID] = useState("");
+  const [hours, setHours] = useState("24");
+  const [error, setError] = useState("");
+  const submit = async () => {
+    const ttl = Number(hours);
+    if (outcome === "exception_created" && !ruleID.trim()) { setError("创建例外时必须填写命中的规则编号。"); return; }
+    if (outcome === "exception_created" && (!Number.isInteger(ttl) || ttl < 1 || ttl > 720)) { setError("例外有效期必须是 1 到 720 小时之间的整数。"); return; }
+    try {
+      await api.post(`/api/admin/audit/events/${row.id}/review`, {
+        outcome, note: note.trim(),
+        exception_rule_id: outcome === "exception_created" ? ruleID.trim() : undefined,
+        exception_ttl_hours: outcome === "exception_created" ? ttl : undefined,
+      });
+      setOpen(false); reload();
+    } catch (e) { setError(errorText(e)); }
+  };
+  return <>
+    <button className="btn small" onClick={() => { setError(""); setOpen(true); }}>复核</button>
+    {open && <Modal title="审核复核" onClose={() => setOpen(false)} onSubmit={submit}>
+      {error && <div className="error" role="alert">{error}</div>}
+      <label className="field"><span className="field-label">复核结论</span><select value={outcome} onChange={e => setOutcome(e.target.value)}>
+        <option value="confirmed_violation">确认违规</option><option value="false_positive">判定误报</option><option value="exception_created">创建精确例外</option>
+      </select></label>
+      {outcome === "exception_created" && <>
+        <label className="field"><span className="field-label">命中的规则编号</span><input value={ruleID} onChange={e => setRuleID(e.target.value)} placeholder="请从该事件命中的规则中复制" required /></label>
+        <label className="field"><span className="field-label">例外有效期（小时）</span><input type="number" min="1" max="720" value={hours} onChange={e => setHours(e.target.value)} required /></label>
+      </>}
+      <label className="field"><span className="field-label">复核说明（可选）</span><textarea value={note} onChange={e => setNote(e.target.value)} rows={3} /></label>
+    </Modal>}
+  </>;
+};
 
 const adminEventsPage = () => (
   <ResourcePage
@@ -475,9 +532,9 @@ const adminEventsPage = () => (
     columns={[
       { name: "created_at", label: "时间" },
       { name: "actor", label: "操作者" },
-      { name: "action", label: "动作" },
-      { name: "target_type", label: "对象" },
-      { name: "target_id", label: "ID" },
+      { name: "action", label: "操作", render: r => label(r.action, "action") },
+      { name: "target_type", label: "对象", render: r => label(r.target_type) },
+      { name: "target_id", label: "对象编号" },
     ]}
   />
 );
@@ -495,19 +552,19 @@ const statusPage = () => {
       <h2>系统状态</h2>
       <ul className="status-list">
         <li>
-          production_ready：<Badge value={s.production_ready ? "true" : "false"} />（需 P0 验证完成后开启）
+          服务就绪：<Badge value={s.production_ready ? "true" : "false"} domain="readiness" />
         </li>
         <li>进行中请求：{s.active_requests}</li>
         <li>
-          unknown 状态请求：{s.unknown_requests}
-          {s.unknown_requests > 0 && <b className="req">（需人工核对账本，见 unknown_resolved 流程）</b>}
+          结果待确认的请求：{s.unknown_requests}
+          {s.unknown_requests > 0 && <b className="req">（请在请求记录中完成结果核对）</b>}
         </li>
         <li>
           账号状态：
           {(s.accounts ?? []).map((a: any) => (
             <span key={a.state}>
               {" "}
-              <Badge value={a.state} />×{a.count}
+              <Badge value={a.state} domain="account" />×{a.count}
             </span>
           ))}
         </li>
@@ -523,13 +580,11 @@ const oauthPage = () => {
 	const [reuseAccountID, setReuseAccountID] = useState("");
   return (
     <div>
-      <h2>OAuth 授权会话</h2>
-      <p className="muted small">
-        PKCE + 随机 state，10 分钟有效、单次消费。回调地址必须是上游注册的地址（P0-01 验证前真实联调为 pending）。
-      </p>
+      <h2>授权会话</h2>
+      <p className="muted small">授权会话有效期为十分钟且只能使用一次。回调地址必须与上游服务已登记的地址一致。</p>
 	<label>
 		复用已有账号（重新授权，可选）
-		<input value={reuseAccountID} placeholder="账号 UUID" onChange={(e) => setReuseAccountID(e.target.value)} />
+		<input value={reuseAccountID} placeholder="请输入账号编号" onChange={(e) => setReuseAccountID(e.target.value)} />
 	</label>
       <button
         className="btn primary"
@@ -554,7 +609,7 @@ const oauthPage = () => {
           className="btn"
           onClick={async () => {
             const r = await api.get<any>(`/api/admin/accounts/oauth/sessions/${sessionId}`);
-            setStatus(r.status + (r.account_id ? ` · 账号 ${r.account_id}` : ""));
+            setStatus(`${label(r.status, "oauth")}${r.account_id ? " · 已关联账号" : ""}`);
           }}
         >
           查询状态
@@ -578,18 +633,18 @@ const OAuthStarter: React.FC = () => {
           const r = await api.post<any>("/api/admin/accounts/oauth/sessions", {});
           setUrl(r.authorize_url); setSessionId(r.id); setStatus("pending"); setMessage(""); setCallbackURL("");
         } catch (e: any) { setMessage(e.message); }
-      }}>OAuth 接入</button>
+      }}>授权接入</button>
       {url && <a className="btn small" href={url} target="_blank" rel="noreferrer">打开授权页</a>}
       {sessionId && <button className="btn small" onClick={async()=>{
         try { const r=await api.get<any>(`/api/admin/accounts/oauth/sessions/${sessionId}`); setStatus(r.status); }
         catch (e: any) { setMessage(e.message); }
       }}>查询状态</button>}
-      {status && <span className="muted small">状态：{status}</span>}
+      {status && <span className="muted small">状态：{label(status, "oauth")}</span>}
     </span>
     {sessionId && <span className="oauth-callback-row">
       <input
-        aria-label="OAuth 回调 URL"
-        placeholder="粘贴 http://localhost:1455/auth/callback?code=...&state=..."
+        aria-label="授权回调地址"
+        placeholder="粘贴浏览器地址栏中的完整回调地址"
         value={callbackURL}
         onChange={(e)=>setCallbackURL(e.target.value)}
       />
@@ -600,23 +655,24 @@ const OAuthStarter: React.FC = () => {
         } catch (e: any) { setMessage(e.message); }
       }}>完成授权</button>
     </span>}
-    {sessionId && <span className="muted small">登录成功后浏览器会跳到 localhost；若页面无法打开，请复制地址栏中的完整 URL，粘贴到这里。</span>}
+    {sessionId && <span className="muted small">登录成功后浏览器会跳回本机地址；若页面无法打开，请复制地址栏中的完整链接并粘贴到这里。</span>}
     {message && <span className={status === "completed" ? "small" : "error small"}>{message}</span>}
   </span>;
 };
 
 const routesPage: React.FC<{ keyId: string }> = ({ keyId }) => (
   <ResourcePage
-    title={`路由 · ${keyId}`}
+    title="接口密钥路由"
     basePath={`/api/admin/keys/${keyId}/routes`}
     columns={[
       { name: "target_type", label: "类型" },
-      { name: "target_id", label: "目标 ID" },
+      { name: "target_id", label: "目标编号" },
       { name: "priority", label: "优先级" },
     ]}
     createFields={[
       { name: "target_type", label: "类型", kind: "select", options: ["account", "group"], required: true },
-      { name: "target_id", label: "目标 ID", required: true },
+      { name: "target_id", label: "目标", kind: "select", optionsPath: "/api/admin/accounts", required: true, visibleWhen: body => body.target_type === "account" },
+      { name: "target_id", label: "目标", kind: "select", optionsPath: "/api/admin/account-pools", required: true, visibleWhen: body => body.target_type === "group" },
       { name: "priority", label: "优先级", kind: "number", default: 100 },
     ]}
     rowActions={(row, reload) => (
@@ -655,7 +711,7 @@ const ADMIN_NAV = [
 
 const USER_NAV = [
   { key: "#/overview", label: "我的概览", page: MyOverview },
-  { key: "#/my-keys", label: "我的 Key", page: MyKeys },
+  { key: "#/my-keys", label: "我的接口密钥", page: MyKeys },
   { key: "#/my-subscriptions", label: "我的订阅", page: MySubscriptions },
   { key: "#/security", label: "账户安全", page: SecurityPage },
 ];
@@ -746,14 +802,14 @@ const Login: React.FC<{ onLoggedIn: () => void | Promise<void> }> = ({ onLoggedI
           }
         }}
       >
-        <h2>SubAI Gateway</h2>
+        <h2>SubAI 管理平台</h2>
         <label>
           用户名
-          <input value={username} onChange={(e) => setUsername(e.target.value)} required />
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
         </label>
         <label>
           密码
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
         </label>
         {error && <div className="error">{error}</div>}
         <button className="btn primary" type="submit">

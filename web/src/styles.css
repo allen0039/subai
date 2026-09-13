@@ -121,7 +121,7 @@ code { background: #101623; padding: 2px 6px; border-radius: 4px; font-size: 11p
 .portal { max-width: 1160px; }
 .portal.narrow { max-width: 520px; }
 .portal-hero { padding: 28px 30px; border: 1px solid #38558d; border-radius: 14px; background: linear-gradient(120deg, #172b53 0%, #172033 62%, #10233d 100%); margin-bottom: 20px; position: relative; overflow: hidden; }
-.portal-hero::after { content: "订阅 → Key → 账号池"; position: absolute; right: 24px; bottom: 18px; color: #8eafd9; font-size: 12px; letter-spacing: .08em; }
+.portal-hero::after { content: "订阅 → 接口密钥 → 账号池"; position: absolute; right: 24px; bottom: 18px; color: #8eafd9; font-size: 12px; letter-spacing: 0; }
 .portal-hero > span, .eyebrow { color: #8fb8ff; font-size: 11px; letter-spacing: .11em; text-transform: uppercase; }
 .portal-hero h1 { margin: 7px 0; font-size: 27px; letter-spacing: -.04em; }
 .portal-hero p { margin: 0; color: #bed0ea; }
@@ -137,4 +137,5 @@ code { background: #101623; padding: 2px 6px; border-radius: 4px; font-size: 11p
 .quota-line { grid-column:1/-1; display:flex; justify-content:space-between; color:var(--muted); border-top:1px solid #2a3852; padding-top:7px; font-size:12px; }.quota-line b{color:var(--text);font-family:"JetBrains Mono",ui-monospace,monospace;font-size:12px}
 .empty-state { color:var(--muted); border:1px dashed var(--border); border-radius:8px; padding:28px; text-align:center; grid-column:1/-1; }
 .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }.check-list{max-height:160px;overflow:auto;border:1px solid var(--border);border-radius:7px;padding:8px;display:flex;flex-direction:column;gap:7px;color:var(--muted)}.check-list input{width:auto;margin-right:6px}
+.inline-actions { display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap; }.inline-actions select { max-width:220px; background:#101623; border:1px solid var(--border); border-radius:6px; color:var(--text); padding:3px 6px; font-size:12px; }.hold-list { display:grid; gap:8px; margin:10px 0; }.hold-item { border:1px solid var(--border); border-radius:6px; padding:8px; display:grid; gap:4px; }.hold-item span { color:var(--muted); font-size:12px; }
 @media (max-width: 760px) { aside{width:176px} main{padding:20px 16px}.metric-grid{grid-template-columns:1fr}.portal-hero::after{display:none}.form-grid{grid-template-columns:1fr}.tbl{display:block;overflow-x:auto} }

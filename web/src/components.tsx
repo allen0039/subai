@@ -1,15 +1,24 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { api, ListResponse } from "./api";
+import { label, cellText } from "./locale";
 
 // ── Generic resource table + create/edit modal (§17.2 surface) ──────────────
 
-export type FieldKind = "text" | "number" | "select" | "textarea" | "checkbox" | "password";
+export type FieldKind = "text" | "number" | "select" | "textarea" | "checkbox" | "password" | "multi-select";
 
 export interface Field {
   name: string;
   label: string;
   kind?: FieldKind;
-  options?: string[];
+  options?: (string | { value: string; label: string })[];
+  domain?: string;
+  emptyLabel?: string;
+  visibleWhen?: (body: Record<string, any>) => boolean;
+  optionsFilter?: (row: any) => boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  scale?: number;
   optionsPath?: string;
   required?: boolean;
   placeholder?: string;
@@ -53,7 +62,7 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
   const [editRow, setEditRow] = useState<any | null>(null);
   const [editBody, setEditBody] = useState<Record<string, any>>({});
   const [flash, setFlash] = useState<string | null>(null);
-  const [page, setPage] = useState(0);
+
   const pageSize = 20;
 
   const load = useCallback(async (off = 0) => {
@@ -97,6 +106,7 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
         body[f.name] = "";
       }
     }
+    setError(null);
     setCreateBody(body);
     setShowCreate(true);
   };
@@ -107,7 +117,7 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
       setShowCreate(false);
       setCreateBody({});
       if (resp?.key) {
-        setFlash(`Key 已创建，仅此一次显示，请立即保存：${resp.key}`);
+        setFlash(`接口密钥已创建，仅此一次显示，请立即保存：${resp.key}`);
       } else {
         setFlash("已创建");
       }
@@ -150,7 +160,7 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
           上一页
         </button>
         <span className="muted small">
-          第 {offset + 1}–{offset + rows.length} 条
+          {rows.length ? `第 ${offset + 1}–${offset + rows.length} 条` : "共 0 条"}
         </span>
         <button className="btn small" disabled={!hasMore || loading} onClick={() => load(offset + pageSize)}>
           下一页
@@ -165,7 +175,7 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
       {loading ? (
         <div className="muted">加载中…</div>
       ) : rows.length === 0 ? (
-        <div className="muted">暂无数据（空状态）</div>
+        <div className="muted">暂无数据</div>
       ) : (
         <table className="tbl">
           <thead>
@@ -180,7 +190,7 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
             {rows.map((row) => (
               <tr key={row.id}>
                 {columns.map((c) => (
-                  <td key={c.name}>{c.render ? c.render(row) : String(row[c.name] ?? "")}</td>
+                  <td key={c.name}>{c.render ? c.render(row) : cellText(c.name, row[c.name])}</td>
                 ))}
                 <td className="actions">
                   {editFields && (
@@ -205,7 +215,8 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
 
       {showCreate && createFields && (
         <Modal title={`新建 · ${title}`} onClose={() => setShowCreate(false)} onSubmit={doCreate}>
-          {createFields.map((f) => (
+          {error && <div className="error" role="alert">{error}</div>}
+          {createFields.filter(f => !f.visibleWhen || f.visibleWhen(createBody)).map((f) => (
             <FormField key={f.name} field={f} value={createBody[f.name] ?? f.default} onChange={(v) => setCreateBody((b) => ({ ...b, [f.name]: v }))} />
           ))}
         </Modal>
@@ -213,8 +224,8 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
       {editRow && editFields && (
         <Modal title={`编辑 · ${title}`} onClose={() => setEditRow(null)} onSubmit={doPatch}>
           {error && <div className="error" role="alert">{error}</div>}
-          {editFields.map((f) => (
-            <FormField key={f.name} field={f} value={editBody[f.name] ?? editRow[f.name] ?? ""} onChange={(v) => setEditBody((b) => ({ ...b, [f.name]: v }))} />
+          {editFields.filter(f => !f.visibleWhen || f.visibleWhen({...editRow, ...editBody})).map((f) => (
+            <FormField key={f.name} field={f} value={Object.prototype.hasOwnProperty.call(editBody, f.name) ? editBody[f.name] : editRow[f.name] ?? ""} onChange={(v) => setEditBody((b) => ({ ...b, [f.name]: v }))} />
           ))}
         </Modal>
       )}
@@ -228,6 +239,7 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
 export function buildCreatePayload(fields: Field[], body: Record<string, any>): Record<string, any> {
   const out: Record<string, any> = {};
   for (const f of fields) {
+    if (f.visibleWhen && !f.visibleWhen(body)) continue;
     const v = body[f.name];
     if (v === undefined || v === null) continue;
     if (typeof v === "string") {
@@ -260,7 +272,7 @@ export const FormField: React.FC<{ field: Field; value: any; onChange: (v: any) 
   value,
   onChange,
 }) => {
-  const { kind = "text", label, options, required, placeholder, help } = field;
+  const { kind = "text", label: fieldLabel, options, required, placeholder, help } = field;
   const [remoteOptions, setRemoteOptions] = useState<any[]>([]);
   const [optionsError, setOptionsError] = useState("");
   useEffect(() => {
@@ -280,19 +292,29 @@ export const FormField: React.FC<{ field: Field; value: any; onChange: (v: any) 
   return (
     <label className="field">
       <span className="field-label">
-        {label}
+        {fieldLabel}
         {required && <b className="req">*</b>}
       </span>
       {kind === "select" ? (
         <select value={value ?? ""} onChange={(e) => onChange(e.target.value)} required={required}>
-          <option value="">—</option>
-          {field.optionsPath && remoteOptions.map(o => <option key={o.id} value={o.id} disabled={o.status === "disabled"}>{o.name}{o.endpoint ? ` · ${o.endpoint}` : ""}{o.primary ? ` · ${o.primary}` : ""}{o.status === "disabled" ? "（已禁用）" : ""}</option>)}
-          {(options ?? []).map((o) => (
-            <option key={o} value={o}>
-              {o}
-            </option>
-          ))}
+          <option value="">{field.emptyLabel ?? (required ? "请选择" : "未设置")}</option>
+          {field.optionsPath && remoteOptions.filter(o => !field.optionsFilter || field.optionsFilter(o)).map(o => <option key={o.id} value={o.id} disabled={o.status === "disabled"}>{o.label ?? o.name ?? (o.owner_type ? `${label(o.owner_type, "owner_type")} · ${label(o.period)} · ${o.amount || 0} 美元` : "未命名资源")}{o.endpoint ? ` · ${o.endpoint}` : ""}{o.primary ? ` · ${o.primary}` : ""}{o.status === "disabled" ? "（已禁用）" : ""}</option>)}
+          {(options ?? []).map((o) => {
+            const option = typeof o === "string" ? {value: o, label: label(o, field.domain ?? field.name)} : o;
+            return <option key={option.value} value={option.value}>{option.label}</option>;
+          })}
         </select>
+      ) : kind === "multi-select" ? (
+        <div className="check-list">
+          <span className="help">按勾选顺序依次使用；取消后重新勾选可调整顺序。</span>
+          {remoteOptions.filter(o => !field.optionsFilter || field.optionsFilter(o)).map(o => <label key={o.id}>
+            <input type="checkbox" checked={Array.isArray(value) && value.includes(o.id)} disabled={o.status === "disabled"} onChange={e => {
+              const selected = Array.isArray(value) ? value : [];
+              onChange(e.target.checked ? [...selected, o.id] : selected.filter(id => id !== o.id));
+            }}/>{o.label ?? o.name}{Array.isArray(value) && value.includes(o.id) ? `（第 ${value.indexOf(o.id) + 1} 顺位）` : ""}
+          </label>)}
+          {!remoteOptions.length && <span className="help">暂无可选资源</span>}
+        </div>
       ) : kind === "textarea" ? (
         <textarea value={value ?? ""} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} rows={4} />
       ) : kind === "checkbox" ? (
@@ -300,9 +322,12 @@ export const FormField: React.FC<{ field: Field; value: any; onChange: (v: any) 
       ) : (
         <input
           type={kind === "number" ? "number" : kind === "password" ? "password" : "text"}
-          value={value ?? ""}
+          value={field.scale && value !== "" && value != null ? Number(value) / field.scale : value ?? ""}
+          min={field.min}
+          max={field.max}
+          step={field.step}
           placeholder={placeholder}
-          onChange={(e) => onChange(kind === "number" ? Number(e.target.value) : e.target.value)}
+          onChange={(e) => onChange(kind === "number" ? (e.target.value === "" ? undefined : Math.round(Number(e.target.value) * (field.scale ?? 1) * 1e8) / 1e8) : e.target.value)}
           required={required}
         />
       )}
@@ -319,7 +344,7 @@ export const Modal: React.FC<{ title: string; onClose: () => void; onSubmit: () 
   children,
 }) => (
   <div className="modal-backdrop" onClick={onClose}>
-    <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
       <h3>{title}</h3>
       <form
         onSubmit={(e) => {
@@ -341,6 +366,6 @@ export const Modal: React.FC<{ title: string; onClose: () => void; onSubmit: () 
   </div>
 );
 
-export const Badge: React.FC<{ value: string }> = ({ value }) => (
-  <span className={`badge badge-${value}`}>{value}</span>
+export const Badge: React.FC<{ value: string; domain?: string }> = ({ value, domain }) => (
+  <span className={`badge badge-${value}`}>{label(value, domain)}</span>
 );

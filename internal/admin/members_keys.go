@@ -207,28 +207,29 @@ func itoa(n int) string {
 func (s *Server) listClients(w http.ResponseWriter, r *http.Request) {
 	limit, offset, _ := pageParams(r, []string{"created_at", "name"})
 	rows, err := s.DB.Pool.Query(r.Context(), `
-		SELECT c.id::text, c.member_id::text, c.name, c.type, c.notes, c.status, c.version,
+		SELECT c.id::text, c.member_id::text, m.name, c.name, c.type, c.notes, c.status, c.version,
 		       (SELECT count(*) FROM api_keys k WHERE k.client_id=c.id) AS key_count
-		FROM clients c ORDER BY c.created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+		FROM clients c JOIN members m ON m.id=c.member_id ORDER BY c.created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
 	}
 	defer rows.Close()
 	type client struct {
-		ID       string `json:"id"`
-		MemberID string `json:"member_id"`
-		Name     string `json:"name"`
-		Type     string `json:"type"`
-		Notes    string `json:"notes"`
-		Status   string `json:"status"`
-		Version  int    `json:"version"`
-		KeyCount int    `json:"key_count"`
+		ID         string `json:"id"`
+		MemberID   string `json:"member_id"`
+		MemberName string `json:"member_name"`
+		Name       string `json:"name"`
+		Type       string `json:"type"`
+		Notes      string `json:"notes"`
+		Status     string `json:"status"`
+		Version    int    `json:"version"`
+		KeyCount   int    `json:"key_count"`
 	}
 	out := []client{}
 	for rows.Next() {
 		var c client
-		if err := rows.Scan(&c.ID, &c.MemberID, &c.Name, &c.Type, &c.Notes, &c.Status, &c.Version, &c.KeyCount); err != nil {
+		if err := rows.Scan(&c.ID, &c.MemberID, &c.MemberName, &c.Name, &c.Type, &c.Notes, &c.Status, &c.Version, &c.KeyCount); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
