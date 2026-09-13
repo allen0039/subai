@@ -54,6 +54,8 @@ SUBAI_MASTER_KEY=<原主密钥> docker compose up -d server
 git pull && docker compose up -d --build server
 ```
 
+升级后可在登录页或控制台左侧栏底部核对“应用版本”。版本旁的修订号来自当前运行的服务端镜像；鼠标悬停可查看完整 Git SHA 和镜像构建时间。也可以直接请求 `GET /api/version` 做自动化核对。
+
 迁移只前进不回滚（D-005）；回滚版本前先恢复备份。
 
 ## 单活约束（D-007）

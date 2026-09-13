@@ -159,6 +159,26 @@ function resetTime(window?: QuotaWindow): string {
   return "未提供";
 }
 
+function resetDate(window?: QuotaWindow): Date | null {
+  if (!window) return null;
+  if (Number(window.reset_at) > 0) return new Date(Number(window.reset_at) * 1000);
+  if (Number(window.reset_after_seconds) >= 0) return new Date(Date.now() + Number(window.reset_after_seconds) * 1000);
+  return null;
+}
+
+function resetCountdown(window?: QuotaWindow): string {
+  const target = resetDate(window);
+  if (!target || !Number.isFinite(target.getTime())) return "等待官方返回";
+  const minutes = Math.max(0, Math.ceil((target.getTime() - Date.now()) / 60000));
+  if (minutes === 0) return "即将恢复";
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days > 0) return `${days} 天 ${hours} 小时后`;
+  if (hours > 0) return `${hours} 小时 ${mins} 分钟后`;
+  return `${mins} 分钟后`;
+}
+
 const planNames: Record<string,string> = {
   free: "免费版", plus: "个人增强版", pro: "专业版", team: "团队版", business: "商业版", enterprise: "企业版", edu: "教育版",
 };
@@ -170,10 +190,15 @@ function planName(value: unknown): string {
 
 const QuotaBar: React.FC<{ label: string; window?: QuotaWindow }> = ({ label: title, window }) => {
   const remaining = remainingPercent(window);
-  return <div className="quota-window">
-    <div className="quota-window-head"><b>{title}</b><span>{remaining == null ? "未提供" : `剩余 ${remaining.toFixed(remaining % 1 ? 1 : 0)}%`}</span></div>
+  const tone = remaining == null ? "unknown" : remaining <= 20 ? "critical" : remaining <= 50 ? "warning" : "healthy";
+  const display = remaining == null ? "—" : remaining.toFixed(remaining % 1 ? 1 : 0);
+  return <div className={`quota-window quota-window-${tone}`}>
+    <div className="quota-window-head">
+      <div><span className="quota-window-icon" aria-hidden="true">{title.startsWith("五") ? "5h" : "7d"}</span><div><b>{title}</b><small>{window ? "滚动用量窗口" : "暂无窗口数据"}</small></div></div>
+      <div className="quota-percent"><span>剩余</span><strong>{display}{remaining != null && <em>%</em>}</strong></div>
+    </div>
     <div className="quota-progress" aria-label={`${title}${remaining == null ? "暂无数据" : `剩余 ${remaining}%`}`}><span style={{width: `${remaining ?? 0}%`}} /></div>
-    <small>重置时间：{resetTime(window)}</small>
+    <div className="quota-reset"><span>预计恢复</span><b>{resetCountdown(window)}</b><time>{resetTime(window)}</time></div>
   </div>;
 };
 
@@ -196,17 +221,28 @@ const QuotaActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload 
   };
   return <>
     <button className="btn small" onClick={() => { setError(""); setOpen(true); }}>额度详情</button>
-    {open && <Modal title={`官方额度 · ${row.label}`} onClose={() => setOpen(false)} onSubmit={refresh} submitLabel={refreshing ? "同步中…" : "立即同步"} submitDisabled={refreshing}>
+    {open && <Modal className="quota-modal" title="官方账号额度" onClose={() => setOpen(false)} onSubmit={refresh} submitLabel={refreshing ? "正在同步…" : "刷新官方额度"} submitDisabled={refreshing}>
       <div className="quota-details">
-        <div className="quota-meta"><span>账号</span><b>{row.quota?.email || row.quota?.upstream_account_id || "未提供"}</b></div>
-        <div className="quota-meta"><span>套餐</span><b>{planName(row.quota?.plan_type)}</b></div>
-        <div className="quota-meta"><span>订阅到期</span><b>{dateTime(row.quota?.subscription_expires_at, "官方未提供")}</b></div>
-        <QuotaBar label="五小时额度" window={findQuotaWindow(row.quota, "five")} />
-        <QuotaBar label="周额度" window={findQuotaWindow(row.quota, "week")} />
-        <div className="quota-times"><span>数据同步：{dateTime(row.quota_fetched_at, "尚未同步")}</span><span>最近尝试：{dateTime(row.quota_last_attempt_at, "尚未尝试")}</span></div>
+        <section className="quota-account-head">
+          <div className="quota-account-mark" aria-hidden="true">AI</div>
+          <div className="quota-account-copy"><span>当前账号</span><b>{row.quota?.email || row.quota?.upstream_account_id || row.label}</b><small>{row.label}</small></div>
+          <span className="quota-plan">{planName(row.quota?.plan_type)}</span>
+        </section>
+        <section className="quota-overview">
+          <div><span>订阅有效期</span><b>{dateTime(row.quota?.subscription_expires_at, "官方暂未提供")}</b></div>
+          <div><span>额度状态</span><b className={row.quota ? "quota-online" : ""}>{row.quota ? "数据已同步" : "等待首次同步"}</b></div>
+        </section>
+        <section className="quota-window-grid">
+          <QuotaBar label="五小时额度" window={findQuotaWindow(row.quota, "five")} />
+          <QuotaBar label="周额度" window={findQuotaWindow(row.quota, "week")} />
+        </section>
+        <section className="quota-sync-status">
+          <div><span>数据更新时间</span><b>{dateTime(row.quota_fetched_at, "尚未同步")}</b></div>
+          <div><span>最近同步尝试</span><b>{dateTime(row.quota_last_attempt_at, "尚未尝试")}</b></div>
+        </section>
         {row.quota_error && <div className="error">上次同步失败：{row.quota_error}</div>}
         {error && <div className="error">{error}</div>}
-        <p className="help">额度百分比和重置时间来自官方账号服务。订阅到期时间未返回时会显示“官方未提供”。</p>
+        <p className="quota-note"><span aria-hidden="true">i</span>额度和重置时间来自官方账号服务，订阅有效期仅在官方返回时显示。</p>
       </div>
     </Modal>}
   </>;
@@ -796,10 +832,23 @@ const USER_NAV = [
 ];
 
 type Identity = { member_id: string; name: string; role: "admin" | "member" };
+type BuildInfo = { version: string; revision: string; built_at: string };
+
+const VersionStamp: React.FC<{ build: BuildInfo | null }> = ({ build }) => {
+  if (!build) return <div className="app-version muted">版本未知</div>;
+  const revision = build.revision && build.revision !== "unknown"
+    ? `${build.revision.slice(0, 12)}${build.revision.endsWith("-dirty") ? "-dirty" : ""}`
+    : "开发构建";
+  const version = build.version === "dev" ? "dev" : `v${build.version}`;
+  return <div className="app-version" title={`构建时间：${build.built_at}\n完整修订：${build.revision}`}>
+    <span>应用版本</span><b>{version}</b><code>{revision}</code>
+  </div>;
+};
 
 export const App: React.FC = () => {
   const [hash, setHash] = useState(location.hash || "");
 	const [identity, setIdentity] = useState<Identity | null | undefined>(undefined);
+  const [build, setBuild] = useState<BuildInfo | null>(null);
   useEffect(() => {
     const fn = () => setHash(location.hash || "#/status");
     window.addEventListener("hashchange", fn);
@@ -810,9 +859,10 @@ export const App: React.FC = () => {
     catch { setIdentity(null); }
   };
 	useEffect(() => { refreshIdentity(); }, []);
+	useEffect(() => { api.get<BuildInfo>("/api/version").then(setBuild).catch(() => setBuild(null)); }, []);
 
 	if (identity === undefined) return <div className="login-wrap">检查登录状态…</div>;
-  if (!identity) return <Login onLoggedIn={refreshIdentity} />;
+  if (!identity) return <Login onLoggedIn={refreshIdentity} build={build} />;
 
   const navItems = identity.role === "admin" ? ADMIN_NAV : USER_NAV;
   const defaultHash = identity.role === "admin" ? "#/status" : "#/overview";
@@ -845,6 +895,7 @@ export const App: React.FC = () => {
           ))}
         </nav>
         <div className="grow" />
+        <VersionStamp build={build} />
         <div className="identity-name">{identity.name}<br/><span>{identity.role === "admin" ? "管理员" : "普通用户"}</span></div>
         <button
           className="btn"
@@ -862,7 +913,7 @@ export const App: React.FC = () => {
   );
 };
 
-const Login: React.FC<{ onLoggedIn: () => void | Promise<void> }> = ({ onLoggedIn }) => {
+const Login: React.FC<{ onLoggedIn: () => void | Promise<void>; build: BuildInfo | null }> = ({ onLoggedIn, build }) => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -895,6 +946,7 @@ const Login: React.FC<{ onLoggedIn: () => void | Promise<void> }> = ({ onLoggedI
           登录
         </button>
         <p className="muted small">管理员和普通用户使用同一入口；系统会根据角色进入对应控制台。</p>
+        <VersionStamp build={build} />
       </form>
     </div>
   );

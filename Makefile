@@ -3,6 +3,10 @@
 SHELL := /bin/bash
 TEST_DB_URL ?= postgres://subai:subai@localhost:54329/subai?sslmode=disable
 TEST_PG_CONTAINER := subai-test-pg
+APP_VERSION := $(shell tr -d '\r\n' < VERSION)
+VCS_REF := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo local)$(shell test -z "$$(git status --porcelain 2>/dev/null)" || echo -dirty)
+BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILD_LDFLAGS := -X subai/internal/buildinfo.Version=$(APP_VERSION) -X subai/internal/buildinfo.Revision=$(VCS_REF) -X subai/internal/buildinfo.BuiltAt=$(BUILD_TIME)
 
 .PHONY: help lint test test-integration build migrate dev dev-web compose-up compose-down deploy pull-update clean test-pg-up test-pg-down
 
@@ -53,7 +57,7 @@ test-integration: test-pg-up
 	TEST_DATABASE_URL="$(TEST_DB_URL)" go test ./tests/integration/ -count=1 -timeout 300s
 
 build:
-	CGO_ENABLED=0 go build -o bin/subai-server ./cmd/server
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(BUILD_LDFLAGS)" -o bin/subai-server ./cmd/server
 	cd web && npm ci --no-audit --no-fund && npm run build
 
 migrate:
@@ -64,7 +68,7 @@ dev:
 	SUBAI_MASTER_KEY=$${SUBAI_MASTER_KEY:?export SUBAI_MASTER_KEY (openssl rand -hex 32)} \
 	SUBAI_DATABASE_URL=$${SUBAI_DATABASE_URL:-postgres://subai:subai@localhost:5432/subai?sslmode=disable} \
 	SUBAI_DEV_BOOTSTRAP_ADMIN=$${SUBAI_DEV_BOOTSTRAP_ADMIN:-} \
-	go run ./cmd/server
+	go run -ldflags "$(BUILD_LDFLAGS)" ./cmd/server
 
 dev-web:
 	cd web && npm run dev

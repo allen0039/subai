@@ -5,12 +5,14 @@
 package server
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"subai/internal/admin"
+	"subai/internal/buildinfo"
 	"subai/internal/gateway"
 	"subai/internal/storage"
 )
@@ -25,6 +27,18 @@ type Deps struct {
 // Build returns the complete HTTP handler.
 func Build(d Deps) http.Handler {
 	mux := http.NewServeMux()
+
+	// Public runtime build identity. The UI uses the server value so operators
+	// can verify which container image is actually serving the request.
+	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(buildinfo.Current())
+	})
 
 	// Data plane (§17.1).
 	mux.HandleFunc("/v1/models", d.Gateway.Models)

@@ -344,16 +344,17 @@ export const FormField: React.FC<{ field: Field; value: any; onChange: (v: any) 
   );
 };
 
-export const Modal: React.FC<{ title: string; onClose: () => void; onSubmit: () => void; children: React.ReactNode; submitLabel?: string; submitDisabled?: boolean }> = ({
+export const Modal: React.FC<{ title: string; onClose: () => void; onSubmit: () => void; children: React.ReactNode; submitLabel?: string; submitDisabled?: boolean; className?: string }> = ({
   title,
   onClose,
   onSubmit,
   children,
   submitLabel = "提交",
   submitDisabled = false,
+  className = "",
 }) => (
   <div className="modal-backdrop" onClick={onClose}>
-    <div className="modal" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
+    <div className={`modal ${className}`.trim()} role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
       <h3>{title}</h3>
       <form
         onSubmit={(e) => {

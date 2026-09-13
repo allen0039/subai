@@ -29,7 +29,7 @@ services:
     restart: unless-stopped
 
   server:
-    image: ghcr.io/allen0039/subai-server:latest
+    image: docker.io/allen0039/subai-server:latest
     build:
       context: .
       dockerfile: deploy/Dockerfile
