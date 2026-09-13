@@ -1,0 +1,10 @@
+bin/
+web/node_modules/
+web/dist/
+.env
+*.log
+*.test
+/server
+/subai
+.DS_Store
+.claude/settings.local.json

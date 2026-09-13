@@ -1,0 +1,58 @@
+# SubAI single-instance deployment (plan §10: 单活后端).
+# The backend refuses to start when another instance holds the singleton lock.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: subai
+      POSTGRES_PASSWORD: ${SUBAI_DB_PASSWORD:?set in .env}
+      POSTGRES_DB: subai
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # Not exposed to the host by default (§22: 数据库不默认暴露公网).
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U subai"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    # Every SUBAI_* variable in .env is injected into the container
+    # (review R2-06: variables in .env alone never reach the container).
+    env_file:
+      - .env
+    environment:
+      SUBAI_LISTEN: ":8080"
+      SUBAI_DATABASE_URL: postgres://subai:${SUBAI_DB_PASSWORD:?set in .env}@db:5432/subai?sslmode=disable
+      SUBAI_MASTER_KEY: ${SUBAI_MASTER_KEY:?set in .env}
+      SUBAI_UPSTREAM_BASE_URL: ${SUBAI_UPSTREAM_BASE_URL:-https://chatgpt.com/backend-api/codex}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:8080:8080" # bind loopback only; HTTPS termination below
+    restart: unless-stopped
+
+  # HTTPS termination (§22). Provide certs in deploy/certs/ or adapt to your
+  # ACME proxy of choice.
+  https:
+    image: caddy:2-alpine
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:

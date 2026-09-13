@@ -1,0 +1,14 @@
+.git
+.env
+*.log
+bin/
+web/node_modules/
+web/dist/
+tests/integration/.out/
+docs/
+*.test
+/server
+/subai
+.DS_Store
+.claude/
+.planning/

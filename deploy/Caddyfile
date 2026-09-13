@@ -1,0 +1,17 @@
+# Replace with your deployment domain. SSE needs response buffering disabled;
+# long timeouts for streaming responses (§22).
+your-domain.example {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+	}
+	reverse_proxy server:8080 {
+		flush_interval -1
+		transport http {
+			response_header_timeout 24h
+		}
+	}
+}
