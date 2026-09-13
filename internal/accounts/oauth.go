@@ -15,12 +15,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"subai/internal/storage"
 )
 
@@ -29,6 +31,16 @@ var (
 	ErrSessionConsumed      = errors.New("oauth session already used")
 	ErrStateMismatch        = errors.New("state mismatch")
 	ErrPendingSessionExists = errors.New("an authorization is already in progress for this account")
+)
+
+// These are public OAuth client settings used by the Codex CLI flow. The
+// client ID is not a secret. Its registered redirect URI is localhost, so a
+// remote admin UI completes the flow by submitting the resulting callback URL.
+const (
+	DefaultAuthorizeURL = "https://auth.openai.com/oauth/authorize"
+	DefaultTokenURL     = "https://auth.openai.com/oauth/token"
+	DefaultClientID     = "app_EMoamEEZ73f0CkXaXp7hrann"
+	DefaultRedirectURI  = "http://localhost:1455/auth/callback"
 )
 
 type Manager struct {
@@ -56,6 +68,9 @@ func NewManager(db *storage.DB, authorizeURL, tokenURL, clientID, redirectURI st
 // 10-minute validity, single consumption (§22). P1-03: when reauthorizing,
 // enforce one pending session per account to prevent credential version races.
 func (m *Manager) StartSession(ctx context.Context, accountID *string) (sessionID, state, authorizeURL, verifier string, err error) {
+	if err = m.validateConfig(); err != nil {
+		return "", "", "", "", err
+	}
 	if accountID != nil {
 		if *accountID == "" {
 			return "", "", "", "", errors.New("reuse account ID is empty")
@@ -84,13 +99,14 @@ func (m *Manager) StartSession(ctx context.Context, accountID *string) (sessionI
 	sum := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
 
-	q := url.Values{}
-	q.Set("response_type", "code")
-	q.Set("client_id", m.ClientID)
-	q.Set("redirect_uri", m.RedirectURI)
-	q.Set("state", state)
-	q.Set("code_challenge", challenge)
-	q.Set("code_challenge_method", "S256")
+	// An abandoned reauthorization must not block the account forever.
+	if accountID != nil {
+		if _, err = m.DB.Pool.Exec(ctx, `
+			UPDATE oauth_sessions SET status='expired'
+			WHERE account_id=$1 AND status='pending' AND expires_at <= now()`, *accountID); err != nil {
+			return "", "", "", "", err
+		}
+	}
 
 	err = m.DB.Pool.QueryRow(ctx, `
 		INSERT INTO oauth_sessions(account_id, state, verifier, redirect_uri, expires_at)
@@ -100,20 +116,92 @@ func (m *Manager) StartSession(ctx context.Context, accountID *string) (sessionI
 		accountID, state, verifier, m.RedirectURI, time.Now().Add(10*time.Minute)).Scan(&sessionID)
 	if err != nil {
 		// ON CONFLICT DO NOTHING returns no rows when conflict occurs
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		if !errors.Is(err, pgx.ErrNoRows) {
 			return "", "", "", "", err
 		}
 		// No rows means conflict - account already has pending session
 		return "", "", "", "", ErrPendingSessionExists
 	}
-	authorizeURL = m.AuthorizeURL + "?" + q.Encode()
+	authorizeURL = m.buildAuthorizeURL(state, challenge)
 	return sessionID, state, authorizeURL, verifier, nil
+}
+
+func (m *Manager) buildAuthorizeURL(state, challenge string) string {
+	q := url.Values{}
+	q.Set("response_type", "code")
+	q.Set("client_id", m.ClientID)
+	q.Set("redirect_uri", m.RedirectURI)
+	q.Set("state", state)
+	q.Set("code_challenge", challenge)
+	q.Set("code_challenge_method", "S256")
+	q.Set("scope", "openid email profile offline_access")
+	q.Set("prompt", "login")
+	q.Set("id_token_add_organizations", "true")
+	q.Set("codex_cli_simplified_flow", "true")
+	return strings.TrimRight(m.AuthorizeURL, "?") + "?" + q.Encode()
+}
+
+func (m *Manager) validateConfig() error {
+	for name, value := range map[string]string{
+		"authorize URL": m.AuthorizeURL,
+		"token URL":     m.TokenURL,
+		"client ID":     m.ClientID,
+		"redirect URI":  m.RedirectURI,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("OAuth %s is not configured", name)
+		}
+	}
+	for name, raw := range map[string]string{"authorize URL": m.AuthorizeURL, "token URL": m.TokenURL, "redirect URI": m.RedirectURI} {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("OAuth %s is invalid", name)
+		}
+	}
+	return nil
+}
+
+// CompleteCallbackURL supports CPA's remote-browser flow: OpenAI redirects to
+// the registered localhost URI, and the administrator pastes that URL back
+// into the authenticated management UI. No request is made to the pasted URL.
+func (m *Manager) CompleteCallbackURL(ctx context.Context, sessionID, rawCallbackURL string) (string, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return "", errors.New("OAuth session ID is required")
+	}
+	if len(rawCallbackURL) > 16*1024 {
+		return "", errors.New("OAuth callback URL is too long")
+	}
+	callback, err := url.Parse(strings.TrimSpace(rawCallbackURL))
+	if err != nil || callback.Scheme == "" || callback.Host == "" {
+		return "", errors.New("invalid OAuth callback URL")
+	}
+	expected, err := url.Parse(m.RedirectURI)
+	if err != nil || !strings.EqualFold(callback.Scheme, expected.Scheme) ||
+		!strings.EqualFold(callback.Host, expected.Host) || callback.Path != expected.Path {
+		return "", errors.New("callback URL does not match the configured redirect URI")
+	}
+	if providerErr := callback.Query().Get("error"); providerErr != "" {
+		description := callback.Query().Get("error_description")
+		if description != "" {
+			return "", fmt.Errorf("OAuth provider rejected authorization: %s (%s)", providerErr, description)
+		}
+		return "", fmt.Errorf("OAuth provider rejected authorization: %s", providerErr)
+	}
+	state, code := callback.Query().Get("state"), callback.Query().Get("code")
+	if state == "" || code == "" {
+		return "", errors.New("callback URL must contain state and code")
+	}
+	return m.completeCallback(ctx, sessionID, state, code)
 }
 
 // CompleteCallback exchanges the code for tokens. The state must exist, be
 // pending, unexpired and is consumed exactly once within the same transaction
 // (single-use guarantee).
 func (m *Manager) CompleteCallback(ctx context.Context, state, code string) (accountID string, err error) {
+	return m.completeCallback(ctx, "", state, code)
+}
+
+func (m *Manager) completeCallback(ctx context.Context, expectedSessionID, state, code string) (accountID string, err error) {
 	tx, err := m.DB.Pool.Begin(ctx)
 	if err != nil {
 		return "", err
@@ -129,11 +217,19 @@ func (m *Manager) CompleteCallback(ctx context.Context, state, code string) (acc
 	if err != nil {
 		return "", ErrStateMismatch
 	}
+	if expectedSessionID != "" && sessionID != expectedSessionID {
+		return "", ErrStateMismatch
+	}
 	if status != "pending" {
 		return "", ErrSessionConsumed
 	}
 	if time.Now().After(expiresAt) {
-		_, _ = tx.Exec(ctx, `UPDATE oauth_sessions SET status='expired' WHERE id=$1`, sessionID)
+		if _, err := tx.Exec(ctx, `UPDATE oauth_sessions SET status='expired', verifier='' WHERE id=$1`, sessionID); err != nil {
+			return "", err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return "", err
+		}
 		return "", ErrSessionExpired
 	}
 
@@ -192,6 +288,9 @@ func (m *Manager) CompleteCallback(ctx context.Context, state, code string) (acc
 	if err != nil {
 		return "", err
 	}
+	if _, err := tx.Exec(ctx, `UPDATE oauth_sessions SET account_id=$2 WHERE id=$1`, sessionID, accountID); err != nil {
+		return "", err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
@@ -208,7 +307,9 @@ func minInt(a, b int) int {
 type tokenSet struct {
 	AccessToken  string     `json:"access_token"`
 	RefreshToken string     `json:"refresh_token"`
+	IDToken      string     `json:"id_token,omitempty"`
 	AccountID    string     `json:"account_id,omitempty"`
+	Email        string     `json:"email,omitempty"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	Label        string     `json:"-"`
 }
@@ -240,21 +341,53 @@ func (m *Manager) tokenRequest(ctx context.Context, form url.Values) (*tokenSet,
 	var raw struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
 		AccountID    string `json:"account_id"`
 		ExpiresIn    int64  `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1024*1024)).Decode(&raw); err != nil {
 		return nil, err
 	}
 	if raw.AccessToken == "" {
 		return nil, errors.New("token response missing access_token")
 	}
-	ts := &tokenSet{AccessToken: raw.AccessToken, RefreshToken: raw.RefreshToken, AccountID: raw.AccountID}
+	ts := &tokenSet{AccessToken: raw.AccessToken, RefreshToken: raw.RefreshToken, IDToken: raw.IDToken, AccountID: raw.AccountID}
+	if raw.IDToken != "" {
+		accountID, email, err := identityFromIDToken(raw.IDToken)
+		if err != nil {
+			return nil, fmt.Errorf("parse OAuth id_token: %w", err)
+		}
+		if ts.AccountID == "" {
+			ts.AccountID = accountID
+		}
+		ts.Email = email
+	}
 	if raw.ExpiresIn > 0 {
 		t := time.Now().Add(time.Duration(raw.ExpiresIn) * time.Second)
 		ts.ExpiresAt = &t
 	}
 	return ts, nil
+}
+
+func identityFromIDToken(token string) (accountID, email string, err error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || len(parts[1]) > 256*1024 {
+		return "", "", errors.New("invalid JWT format")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", "", errors.New("invalid JWT payload encoding")
+	}
+	var claims struct {
+		Email string `json:"email"`
+		Auth  struct {
+			ChatGPTAccountID string `json:"chatgpt_account_id"`
+		} `json:"https://api.openai.com/auth"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", "", errors.New("invalid JWT claims")
+	}
+	return strings.TrimSpace(claims.Auth.ChatGPTAccountID), strings.TrimSpace(claims.Email), nil
 }
 
 // Refresh rotates tokens for one account with per-account mutual exclusion:
@@ -327,6 +460,15 @@ func (m *Manager) Refresh(ctx context.Context, accountID string) error {
 	}
 	if fresh.RefreshToken == "" {
 		fresh.RefreshToken = creds.RefreshToken // upstream may not rotate refresh tokens
+	}
+	if fresh.IDToken == "" {
+		fresh.IDToken = creds.IDToken
+	}
+	if fresh.AccountID == "" {
+		fresh.AccountID = creds.AccountID
+	}
+	if fresh.Email == "" {
+		fresh.Email = creds.Email
 	}
 	sealedFresh, err := sealTokens(m.DB, fresh)
 	if err != nil {

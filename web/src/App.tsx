@@ -552,9 +552,40 @@ const OAuthStarter: React.FC = () => {
   const [url, setUrl] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [status, setStatus] = useState("");
-  return <span className="rule-tester"><button className="btn" onClick={async () => {
-    const r = await api.post<any>("/api/admin/accounts/oauth/sessions", {}); setUrl(r.authorize_url); setSessionId(r.id);
-  }}>OAuth 接入</button>{url && <a className="btn small" href={url} target="_blank" rel="noreferrer">打开授权页</a>}{sessionId && <button className="btn small" onClick={async()=>{const r=await api.get<any>(`/api/admin/accounts/oauth/sessions/${sessionId}`);setStatus(r.status);}}>查询状态</button>}{status && <span className="muted small">{status}</span>}</span>;
+  const [callbackURL, setCallbackURL] = useState("");
+  const [message, setMessage] = useState("");
+  return <span className="oauth-starter">
+    <span className="rule-tester">
+      <button className="btn" onClick={async () => {
+        try {
+          const r = await api.post<any>("/api/admin/accounts/oauth/sessions", {});
+          setUrl(r.authorize_url); setSessionId(r.id); setStatus("pending"); setMessage(""); setCallbackURL("");
+        } catch (e: any) { setMessage(e.message); }
+      }}>OAuth 接入</button>
+      {url && <a className="btn small" href={url} target="_blank" rel="noreferrer">打开授权页</a>}
+      {sessionId && <button className="btn small" onClick={async()=>{
+        try { const r=await api.get<any>(`/api/admin/accounts/oauth/sessions/${sessionId}`); setStatus(r.status); }
+        catch (e: any) { setMessage(e.message); }
+      }}>查询状态</button>}
+      {status && <span className="muted small">状态：{status}</span>}
+    </span>
+    {sessionId && <span className="oauth-callback-row">
+      <input
+        aria-label="OAuth 回调 URL"
+        placeholder="粘贴 http://localhost:1455/auth/callback?code=...&state=..."
+        value={callbackURL}
+        onChange={(e)=>setCallbackURL(e.target.value)}
+      />
+      <button className="btn small primary" disabled={!callbackURL.trim()} onClick={async()=>{
+        try {
+          const r=await api.post<any>(`/api/admin/accounts/oauth/sessions/${sessionId}/callback`, {callback_url: callbackURL.trim()});
+          setStatus("completed"); setMessage(`授权成功，账号 ${r.account_id} 已接入`); setCallbackURL("");
+        } catch (e: any) { setMessage(e.message); }
+      }}>完成授权</button>
+    </span>}
+    {sessionId && <span className="muted small">登录成功后浏览器会跳到 localhost；若页面无法打开，请复制地址栏中的完整 URL，粘贴到这里。</span>}
+    {message && <span className={status === "completed" ? "small" : "error small"}>{message}</span>}
+  </span>;
 };
 
 const routesPage: React.FC<{ keyId: string }> = ({ keyId }) => (

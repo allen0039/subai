@@ -109,6 +109,9 @@ main { flex: 1; padding: 28px 36px; max-width: 1280px; }
 .status-list { line-height: 2; }
 .rule-tester { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .rule-tester input { background: #101623; border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 8px; width: 260px; }
+.oauth-starter { display: inline-flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.oauth-callback-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.oauth-callback-row input { background: #101623; border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 7px 9px; width: min(620px, 70vw); }
 code { background: #101623; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
 .identity-name { border-top: 1px solid var(--border); color: var(--text); font-size: 12px; padding: 12px 8px; margin-top: 12px; }
 .identity-name span { color: var(--muted); font-size: 11px; }

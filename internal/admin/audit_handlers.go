@@ -780,6 +780,24 @@ func (s *Server) getOAuthSession(w http.ResponseWriter, r *http.Request, id stri
 	s.writeJSON(w, 200, map[string]any{"id": id, "status": status, "account_id": accountID})
 }
 
+func (s *Server) completeOAuthCallbackURL(w http.ResponseWriter, r *http.Request, sessionID string) {
+	r.Body = http.MaxBytesReader(w, r.Body, 20*1024)
+	var req struct {
+		CallbackURL string `json:"callback_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeErr(w, http.StatusBadRequest, "invalid callback request")
+		return
+	}
+	accountID, err := s.OAuth.CompleteCallbackURL(r.Context(), sessionID, req.CallbackURL)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, "oauth callback rejected: "+err.Error())
+		return
+	}
+	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "oauth.session_complete", "oauth_session", sessionID, nil, "")
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "account_id": accountID})
+}
+
 // oauthCallback is the public redirect target: state must match a pending
 // session; single use; then it completes and records the account.
 func (s *Server) OAuthCallback(w http.ResponseWriter, r *http.Request) {

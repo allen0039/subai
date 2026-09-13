@@ -501,16 +501,21 @@ func (s *Server) Routes() http.Handler {
 		s.startOAuthSession(w, r)
 	}))
 	mux.Handle("/api/admin/accounts/oauth/sessions/", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		id := pathID(r, "/api/admin/accounts/oauth/sessions/")
-		if r.Method != http.MethodGet {
-			s.writeErr(w, 405, "method not allowed")
-			return
-		}
-		if !resourceUUID.MatchString(id) {
+		rest := pathID(r, "/api/admin/accounts/oauth/sessions/")
+		parts := strings.Split(rest, "/")
+		if len(parts) < 1 || !resourceUUID.MatchString(parts[0]) {
 			s.writeErr(w, 400, "invalid session ID")
 			return
 		}
-		s.getOAuthSession(w, r, id)
+		if len(parts) == 1 && r.Method == http.MethodGet {
+			s.getOAuthSession(w, r, parts[0])
+			return
+		}
+		if len(parts) == 2 && parts[1] == "callback" && r.Method == http.MethodPost {
+			s.completeOAuthCallbackURL(w, r, parts[0])
+			return
+		}
+		s.writeErr(w, 405, "method not allowed")
 	}))
 
 	mux.Handle("/api/admin/requests/", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {

@@ -156,10 +156,10 @@ func main() {
 	sched.SetMaxPerAccount(cfg.PerAccountConcurrency)
 	egressResolver := egress.NewResolver(db)
 	oauth := accounts.NewManager(db,
-		envDefault("SUBAI_OAUTH_AUTHORIZE_URL", "https://auth.openai.com/authorize"),
-		envDefault("SUBAI_OAUTH_TOKEN_URL", "https://auth.openai.com/oauth/token"),
-		envDefault("SUBAI_OAUTH_CLIENT_ID", ""),
-		envDefault("SUBAI_OAUTH_REDIRECT_URI", "http://localhost:8080/api/oauth/callback"))
+		envDefault("SUBAI_OAUTH_AUTHORIZE_URL", accounts.DefaultAuthorizeURL),
+		envDefault("SUBAI_OAUTH_TOKEN_URL", accounts.DefaultTokenURL),
+		envDefault("SUBAI_OAUTH_CLIENT_ID", accounts.DefaultClientID),
+		envDefault("SUBAI_OAUTH_REDIRECT_URI", accounts.DefaultRedirectURI))
 
 	ready := gateway.NewReadiness(cfg, db)
 	reload := func() {
