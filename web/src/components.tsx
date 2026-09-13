@@ -90,6 +90,13 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
     load(0);
   }, [load]);
 
+  useEffect(() => {
+    const refresh = () => load(0);
+    const eventName = `subai:refresh:${basePath}`;
+    window.addEventListener(eventName, refresh);
+    return () => window.removeEventListener(eventName, refresh);
+  }, [basePath, load]);
+
   const openCreate = () => {
     // Initialize real form values from field defaults (review P2-13), typed
     // per field kind (review R2-07): optional numbers stay undefined so we
@@ -337,11 +344,13 @@ export const FormField: React.FC<{ field: Field; value: any; onChange: (v: any) 
   );
 };
 
-export const Modal: React.FC<{ title: string; onClose: () => void; onSubmit: () => void; children: React.ReactNode }> = ({
+export const Modal: React.FC<{ title: string; onClose: () => void; onSubmit: () => void; children: React.ReactNode; submitLabel?: string; submitDisabled?: boolean }> = ({
   title,
   onClose,
   onSubmit,
   children,
+  submitLabel = "提交",
+  submitDisabled = false,
 }) => (
   <div className="modal-backdrop" onClick={onClose}>
     <div className="modal" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
@@ -357,8 +366,8 @@ export const Modal: React.FC<{ title: string; onClose: () => void; onSubmit: () 
           <button type="button" className="btn" onClick={onClose}>
             取消
           </button>
-          <button type="submit" className="btn primary">
-            提交
+          <button type="submit" className="btn primary" disabled={submitDisabled}>
+            {submitLabel}
           </button>
         </div>
       </form>

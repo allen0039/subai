@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -802,7 +803,8 @@ func (s *Server) completeOAuthCallbackURL(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "oauth.session_complete", "oauth_session", sessionID, nil, "")
-	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "account_id": accountID})
+	quotaSynced := s.syncQuotaAfterOAuth(r.Context(), accountID)
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "account_id": accountID, "quota_synced": quotaSynced})
 }
 
 // oauthCallback is the public redirect target: state must match a pending
@@ -819,7 +821,18 @@ func (s *Server) OAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, 400, "oauth callback rejected: "+err.Error())
 		return
 	}
-	s.writeJSON(w, 200, map[string]any{"ok": true, "account_id": accountID})
+	quotaSynced := s.syncQuotaAfterOAuth(r.Context(), accountID)
+	s.writeJSON(w, 200, map[string]any{"ok": true, "account_id": accountID, "quota_synced": quotaSynced})
+}
+
+func (s *Server) syncQuotaAfterOAuth(parent context.Context, accountID string) bool {
+	if s.Quota == nil || s.Egress == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(parent, 35*time.Second)
+	defer cancel()
+	_, err := s.syncAccountQuota(ctx, accountID)
+	return err == nil
 }
 
 var _ = strings.TrimSpace

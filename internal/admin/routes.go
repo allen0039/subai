@@ -346,6 +346,19 @@ func (s *Server) Routes() http.Handler {
 	}))
 	mux.Handle("/api/admin/accounts/", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		id := pathID(r, "/api/admin/accounts/")
+		if strings.HasSuffix(id, "/quota/refresh") {
+			base := strings.TrimSuffix(id, "/quota/refresh")
+			if !resourceUUID.MatchString(base) {
+				s.writeErr(w, 400, "账号标识无效")
+				return
+			}
+			if r.Method != http.MethodPost {
+				s.writeErr(w, 405, "请求方式不支持")
+				return
+			}
+			s.refreshAccountQuota(w, r, base)
+			return
+		}
 		if strings.HasSuffix(id, "/holds") {
 			base := strings.TrimSuffix(id, "/holds")
 			if !resourceUUID.MatchString(base) {

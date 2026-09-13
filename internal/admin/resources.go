@@ -315,8 +315,14 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.DB.Pool.Query(r.Context(), `
 		SELECT a.id::text, a.provider, a.label, a.state, a.concurrency_limit, a.priority,
 		       COALESCE(a.egress_policy_id::text,''), a.credential_version, COALESCE(a.expires_at::text,''),
-		       a.version, a.created_at::text, COALESCE(ep.name,'未配置'), COALESCE(pp.name,'未配置')
-		FROM accounts a LEFT JOIN egress_policies ep ON ep.id=a.egress_policy_id LEFT JOIN proxy_profiles pp ON pp.id=ep.primary_proxy_id ORDER BY a.created_at DESC, a.id LIMIT $1 OFFSET $2`, limit, offset)
+		       a.version, a.created_at::text, COALESCE(ep.name,'未配置'), COALESCE(pp.name,'未配置'),
+		       COALESCE(q.snapshot::text,'null'), COALESCE(q.fetched_at::text,''),
+		       COALESCE(q.last_attempt_at::text,''), COALESCE(q.fetch_error,'')
+		FROM accounts a
+		LEFT JOIN egress_policies ep ON ep.id=a.egress_policy_id
+		LEFT JOIN proxy_profiles pp ON pp.id=ep.primary_proxy_id
+		LEFT JOIN account_quota_snapshots q ON q.account_id=a.id
+		ORDER BY a.created_at DESC, a.id LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
@@ -325,16 +331,22 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 	out := []map[string]any{}
 	for rows.Next() {
 		var id, provider, label, state, egress, expires, created, policyName, proxyName string
+		var quotaJSON, quotaFetched, quotaAttempt, quotaError string
 		var limit, priority, credVersion, version int
-		if err := rows.Scan(&id, &provider, &label, &state, &limit, &priority, &egress, &credVersion, &expires, &version, &created, &policyName, &proxyName); err != nil {
+		if err := rows.Scan(&id, &provider, &label, &state, &limit, &priority, &egress, &credVersion, &expires, &version, &created, &policyName, &proxyName, &quotaJSON, &quotaFetched, &quotaAttempt, &quotaError); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
+		}
+		var quota any
+		if quotaJSON != "null" {
+			_ = json.Unmarshal([]byte(quotaJSON), &quota)
 		}
 		out = append(out, map[string]any{
 			"id": id, "provider": provider, "label": label, "state": state,
 			"concurrency_limit": limit, "priority": priority, "egress_policy_id": egress,
 			"egress_policy_name": policyName, "proxy_name": proxyName,
 			"credential_version": credVersion, "expires_at": expires, "version": version, "created_at": created,
+			"quota": quota, "quota_fetched_at": quotaFetched, "quota_last_attempt_at": quotaAttempt, "quota_error": quotaError,
 		})
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})

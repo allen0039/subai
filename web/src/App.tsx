@@ -111,8 +111,8 @@ const accountsPage = () => (
       { name: "concurrency_limit", label: "并发上限" },
       { name: "priority", label: "优先级" },
       { name: "proxy_name", label: "当前代理" },
-      { name: "credential_version", label: "凭证版本" },
-      { name: "expires_at", label: "凭证到期" },
+      { name: "quota", label: "官方额度", render: (r) => <QuotaSummary row={r} /> },
+      { name: "expires_at", label: "登录凭证到期" },
     ]}
     createFields={[
       { name: "label", label: "标签", required: true },
@@ -129,10 +129,88 @@ const accountsPage = () => (
       { name: "concurrency_limit", label: "并发上限", kind: "number" },
       { name: "priority", label: "优先级", kind: "number" },
     ]}
-    rowActions={(row, reload) => <HoldActions row={row} reload={reload} />}
+    rowActions={(row, reload) => <><QuotaActions row={row} reload={reload} /><HoldActions row={row} reload={reload} /></>}
     notice={<OAuthStarter />}
   />
 );
+
+type QuotaWindow = { used_percent?: number; limit_window_seconds?: number; reset_after_seconds?: number; reset_at?: number };
+
+function quotaWindows(quota: any): QuotaWindow[] {
+  return [quota?.rate_limit?.primary_window, quota?.rate_limit?.secondary_window].filter(Boolean);
+}
+
+function findQuotaWindow(quota: any, kind: "five" | "week"): QuotaWindow | undefined {
+  return quotaWindows(quota).find(window => {
+    const seconds = Number(window.limit_window_seconds ?? 0);
+    return kind === "five" ? seconds > 0 && seconds <= 6 * 3600 : seconds >= 6 * 24 * 3600;
+  });
+}
+
+function remainingPercent(window?: QuotaWindow): number | null {
+  if (!window || !Number.isFinite(Number(window.used_percent))) return null;
+  return Math.max(0, Math.min(100, 100 - Number(window.used_percent)));
+}
+
+function resetTime(window?: QuotaWindow): string {
+  if (!window) return "未提供";
+  if (Number(window.reset_at) > 0) return dateTime(new Date(Number(window.reset_at) * 1000).toISOString());
+  if (Number(window.reset_after_seconds) >= 0) return dateTime(new Date(Date.now() + Number(window.reset_after_seconds) * 1000).toISOString());
+  return "未提供";
+}
+
+const planNames: Record<string,string> = {
+  free: "免费版", plus: "个人增强版", pro: "专业版", team: "团队版", business: "商业版", enterprise: "企业版", edu: "教育版",
+};
+
+function planName(value: unknown): string {
+  const key = String(value ?? "").trim().toLowerCase();
+  return planNames[key] ?? (key ? "其他套餐" : "未提供");
+}
+
+const QuotaBar: React.FC<{ label: string; window?: QuotaWindow }> = ({ label: title, window }) => {
+  const remaining = remainingPercent(window);
+  return <div className="quota-window">
+    <div className="quota-window-head"><b>{title}</b><span>{remaining == null ? "未提供" : `剩余 ${remaining.toFixed(remaining % 1 ? 1 : 0)}%`}</span></div>
+    <div className="quota-progress" aria-label={`${title}${remaining == null ? "暂无数据" : `剩余 ${remaining}%`}`}><span style={{width: `${remaining ?? 0}%`}} /></div>
+    <small>重置时间：{resetTime(window)}</small>
+  </div>;
+};
+
+const QuotaSummary: React.FC<{ row: any }> = ({ row }) => {
+  const five = remainingPercent(findQuotaWindow(row.quota, "five"));
+  const week = remainingPercent(findQuotaWindow(row.quota, "week"));
+  if (!row.quota) return <span className="muted small">尚未同步</span>;
+  return <span className="quota-summary">五小时 {five == null ? "未知" : `${Math.round(five)}%`} · 每周 {week == null ? "未知" : `${Math.round(week)}%`}</span>;
+};
+
+const QuotaActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload }) => {
+  const [open, setOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const refresh = async () => {
+    setRefreshing(true); setError("");
+    try { await api.post(`/api/admin/accounts/${row.id}/quota/refresh`); reload(); setOpen(false); }
+    catch (e) { setError(errorText(e)); }
+    finally { setRefreshing(false); }
+  };
+  return <>
+    <button className="btn small" onClick={() => { setError(""); setOpen(true); }}>额度详情</button>
+    {open && <Modal title={`官方额度 · ${row.label}`} onClose={() => setOpen(false)} onSubmit={refresh} submitLabel={refreshing ? "同步中…" : "立即同步"} submitDisabled={refreshing}>
+      <div className="quota-details">
+        <div className="quota-meta"><span>账号</span><b>{row.quota?.email || row.quota?.upstream_account_id || "未提供"}</b></div>
+        <div className="quota-meta"><span>套餐</span><b>{planName(row.quota?.plan_type)}</b></div>
+        <div className="quota-meta"><span>订阅到期</span><b>{dateTime(row.quota?.subscription_expires_at, "官方未提供")}</b></div>
+        <QuotaBar label="五小时额度" window={findQuotaWindow(row.quota, "five")} />
+        <QuotaBar label="周额度" window={findQuotaWindow(row.quota, "week")} />
+        <div className="quota-times"><span>数据同步：{dateTime(row.quota_fetched_at, "尚未同步")}</span><span>最近尝试：{dateTime(row.quota_last_attempt_at, "尚未尝试")}</span></div>
+        {row.quota_error && <div className="error">上次同步失败：{row.quota_error}</div>}
+        {error && <div className="error">{error}</div>}
+        <p className="help">额度百分比和重置时间来自官方账号服务。订阅到期时间未返回时会显示“官方未提供”。</p>
+      </div>
+    </Modal>}
+  </>;
+};
 
 const releasableHoldReasons = ["over_reserve", "admin_action", "admin_pause", "legacy_review"];
 const HoldActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload }) => {
@@ -636,7 +714,7 @@ const OAuthStarter: React.FC = () => {
       }}>授权接入</button>
       {url && <a className="btn small" href={url} target="_blank" rel="noreferrer">打开授权页</a>}
       {sessionId && <button className="btn small" onClick={async()=>{
-        try { const r=await api.get<any>(`/api/admin/accounts/oauth/sessions/${sessionId}`); setStatus(r.status); }
+        try { const r=await api.get<any>(`/api/admin/accounts/oauth/sessions/${sessionId}`); setStatus(r.status); if (r.status === "completed") window.dispatchEvent(new Event("subai:refresh:/api/admin/accounts")); }
         catch (e: any) { setMessage(e.message); }
       }}>查询状态</button>}
       {status && <span className="muted small">状态：{label(status, "oauth")}</span>}
@@ -651,7 +729,8 @@ const OAuthStarter: React.FC = () => {
       <button className="btn small primary" disabled={!callbackURL.trim()} onClick={async()=>{
         try {
           const r=await api.post<any>(`/api/admin/accounts/oauth/sessions/${sessionId}/callback`, {callback_url: callbackURL.trim()});
-          setStatus("completed"); setMessage(`授权成功，账号 ${r.account_id} 已接入`); setCallbackURL("");
+          setStatus("completed"); setMessage(r.quota_synced ? "授权成功，账号信息和官方额度已同步" : "授权成功，官方额度暂未同步，可在额度详情中重试"); setCallbackURL("");
+          window.dispatchEvent(new Event("subai:refresh:/api/admin/accounts"));
         } catch (e: any) { setMessage(e.message); }
       }}>完成授权</button>
     </span>}

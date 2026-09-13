@@ -138,4 +138,15 @@ code { background: #101623; padding: 2px 6px; border-radius: 4px; font-size: 11p
 .empty-state { color:var(--muted); border:1px dashed var(--border); border-radius:8px; padding:28px; text-align:center; grid-column:1/-1; }
 .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }.check-list{max-height:160px;overflow:auto;border:1px solid var(--border);border-radius:7px;padding:8px;display:flex;flex-direction:column;gap:7px;color:var(--muted)}.check-list input{width:auto;margin-right:6px}
 .inline-actions { display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap; }.inline-actions select { max-width:220px; background:#101623; border:1px solid var(--border); border-radius:6px; color:var(--text); padding:3px 6px; font-size:12px; }.hold-list { display:grid; gap:8px; margin:10px 0; }.hold-item { border:1px solid var(--border); border-radius:6px; padding:8px; display:grid; gap:4px; }.hold-item span { color:var(--muted); font-size:12px; }
+.quota-summary { white-space: nowrap; font-size: 12px; color: #b8d2ff; }
+.quota-details { display: grid; gap: 12px; }
+.quota-meta { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 10px; font-size: 13px; }
+.quota-meta span, .quota-times, .quota-window small { color: var(--muted); }
+.quota-meta b { overflow-wrap: anywhere; }
+.quota-window { border-top: 1px solid var(--border); padding-top: 12px; display: grid; gap: 7px; }
+.quota-window-head { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.quota-window-head span { color: #b8d2ff; }
+.quota-progress { height: 8px; border-radius: 4px; overflow: hidden; background: #101623; border: 1px solid var(--border); }
+.quota-progress span { display: block; height: 100%; background: #3f8f68; transition: width .2s ease; }
+.quota-times { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 11px; }
 @media (max-width: 760px) { aside{width:176px} main{padding:20px 16px}.metric-grid{grid-template-columns:1fr}.portal-hero::after{display:none}.form-grid{grid-template-columns:1fr}.tbl{display:block;overflow-x:auto} }
