@@ -243,6 +243,11 @@ func (s *Server) Responses(w http.ResponseWriter, r *http.Request) {
 		errUpstream(rid, "storage unavailable").write(w)
 		return
 	}
+	if err := s.State.SetSubscription(ctx, rid, info.SubscriptionID); err != nil {
+		logStorageErr("set_subscription", err)
+		errUpstream(rid, "storage unavailable").write(w)
+		return
+	}
 	if err := s.State.Transition(ctx, rid, "validated", ""); err != nil {
 		logStorageErr("transition_validated", err)
 		errUpstream(rid, "storage unavailable").write(w)
@@ -356,7 +361,7 @@ func (s *Server) Responses(w http.ResponseWriter, r *http.Request) {
 	// (§1, §19 + review P2-11): capacity-aware pick closes the pick/race window.
 	stickySession := r.Header.Get("X-Session-Id")
 	stickyID := s.Sticky.Get(info.ID, stickySession)
-	acct, releaseSlots, err := s.Sched.AcquireAccount(ctx, info.ID, info.ConcurrencyLimit, stickyID)
+	acct, releaseSlots, err := s.Sched.AcquireAccountWithSubscription(ctx, info.ID, info.ConcurrencyLimit, info.SubscriptionID, info.SubscriptionLimit, stickyID)
 	if err != nil {
 		_ = s.State.Transition(ctx, rid, "failed_before_dispatch", "no_account")
 		switch {

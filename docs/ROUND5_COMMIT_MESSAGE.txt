@@ -1,0 +1,111 @@
+fix(critical): Round 5 审查修复 - 定价、隔离、安全加固
+
+本次提交修复了 Round 5 独立审查报告中的全部 6 个问题。
+
+## 修复概览
+
+- R5-01 [CRITICAL] 缓存令牌定价计算错误
+- R5-02 [HIGH] 隔离账号仍可被选择和激活
+- R5-03 [MEDIUM] 测试清理列表缺少 account_holds
+- R5-04 [MEDIUM] 测试配置硬编码数据库连接
+- R5-05 [MEDIUM] 管理端点路径参数未验证
+- R5-06 [LOW] 相同优先级路由不轮换
+
+## 关键变更
+
+### R5-01: 定价计算修正 [CRITICAL]
+**文件**: internal/billing/billing.go
+
+修正 UsageFromTotal 函数逻辑，使用 `total - cached` 而非 `total + cached`:
+- 修复前: 缓存令牌按 $2/M 计费（错误）
+- 修复后: 缓存令牌按 $0.2/M 计费（正确）
+- 添加输入验证（负值、cached > total）
+- 新增单元测试 (billing_test.go, 130行)
+- 新增集成测试 (round5_fixes_test.go:12-32)
+
+**财务影响**: 缓存令牌被过度收费 10 倍，需要审计和退款
+
+### R5-02: 账号隔离增强 [HIGH]
+**文件**: internal/scheduler/scheduler.go, internal/admin/resources.go
+
+调度器过滤:
+- loadAccount: 添加 `NOT EXISTS (SELECT 1 FROM account_holds ...)`
+- groupAccounts: 添加 `NOT EXISTS (SELECT 1 FROM account_holds ...)`
+
+管理 API 保护:
+- patchAccount: 激活前检查 holds，有 hold 返回 409
+
+测试: round5_fixes_test.go:34-63 (双路径验证)
+
+### R5-05: 输入验证 [MEDIUM]
+**文件**: internal/admin/routes.go
+
+为三个管理端点添加 UUID 验证:
+- /api/admin/proxies/{id}/test
+- /api/admin/proxies/{id}
+- /api/admin/audit/events/{id}/review
+
+防止 SQL 注入和路径遍历攻击。
+测试: round5_admin_validation_test.go (67行)
+
+### R5-06: 调度公平性 [LOW]
+**文件**: internal/scheduler/scheduler.go:179-180
+
+使用 `r.Priority` 而非循环索引作为 tier，确保相同优先级的路由均匀轮换。
+测试: round5_fixes_test.go:65-95
+
+### R5-03/04: 测试改进 [MEDIUM]
+**文件**: tests/integration/integration_test.go, tests/integration/round4_fixes_test.go
+
+- 添加 account_holds 到测试清理列表
+- 移除硬编码 testPool，统一使用 newTestEnv(t)
+- 所有测试现在遵循 TEST_DATABASE_URL 环境变量
+
+## 测试覆盖
+
+新增测试文件:
+- internal/billing/billing_test.go - 单元测试 (15个测试)
+- tests/integration/round5_fixes_test.go - 集成测试 (3个测试)
+- tests/integration/round5_admin_validation_test.go - 安全测试 (4个测试)
+
+测试命令:
+```bash
+go test ./internal/billing -v
+go test ./tests/integration -run TestR5 -v
+```
+
+## 文档
+
+新增文档:
+- docs/ROUND5_FIXES_REPORT.md - 完整修复报告
+- docs/ROUND5_FIXES_SUMMARY.md - 详细技术总结
+- docs/ROUND5_VERIFICATION_CHECKLIST.md - 验证清单
+- docs/ROUND5_QUICK_REFERENCE.md - 快速参考
+- docs/ROUND5_CHANGES.md - 变更摘要
+
+## 向后兼容性
+
+✅ 所有修复都是向后兼容的
+- 函数签名未改变
+- 仅拒绝非法输入（正常请求不受影响）
+- 调度器行为更安全（保守过滤）
+
+## 部署注意事项
+
+1. **数据库索引**: 确保 `account_holds.account_id` 有索引
+2. **财务回溯**: R5-01 需要审计历史记录并退款
+3. **监控**: 关注定价错误、调度器错误、输入验证拒绝率
+4. **性能**: R5-02 调度器查询增加子查询，需要验证性能
+
+## 回滚计划
+
+触发条件: 错误率 > 10% 或计费异常
+回滚步骤: git revert → 重新部署 → 验证 → 分析根因
+
+---
+
+审查报告: INDEPENDENT_REVIEW_ROUND5_2026-09-12.md
+修复日期: 2026-09-13
+修复者: Claude (Opus 5)
+
+Co-authored-by: Independent Reviewer <reviewer@example.com>

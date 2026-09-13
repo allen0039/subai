@@ -171,9 +171,9 @@ func Settle(ctx context.Context, pool Pool, requestID string, attemptID int64, k
 		// index is the source of truth; ON CONFLICT DO NOTHING makes racing
 		// settlements converge on exactly one charge row (§18.3).
 		tag, err := tx.Exec(ctx, `
-			INSERT INTO usage_ledger(request_id, attempt_id, api_key_id, account_id,
+			INSERT INTO usage_ledger(request_id, attempt_id, api_key_id, account_id, user_subscription_id,
 				input_tokens, cached_input_tokens, output_tokens, cost, price_version_id, entry_type, details)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'charge',$10)
+			VALUES($1,$2,$3,$4,(SELECT user_subscription_id FROM api_keys WHERE id=$3),$5,$6,$7,$8,$9,'charge',$10)
 			ON CONFLICT (request_id, attempt_id, entry_type) DO NOTHING`,
 			requestID, attemptID, keyID, nullIfEmpty(accountID),
 			usage.InputTokens, usage.CachedTokens, usage.OutputTokens, cost, nullIfEmpty(priceVersionID),

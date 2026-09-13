@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "./api";
 import { Badge, ResourcePage, Field, Column } from "./components";
+import { AdminPlans, AdminSubscriptions, AdminUserEntitlements, MyKeys, MyOverview, MySubscriptions, SecurityPage } from "./portal";
 
 // ── Resource registry: every admin surface, driven by data (§17.2) ──────────
 
@@ -8,12 +9,14 @@ const statusCol: Column = { name: "status", label: "状态", render: (r) => <Bad
 
 const membersPage = () => (
   <ResourcePage
-    title="成员"
-    basePath="/api/admin/members"
+    title="用户管理"
+    basePath="/api/admin/users"
     columns={[
       { name: "name", label: "用户名" },
       { name: "role", label: "角色", render: (r) => <Badge value={r.role} /> },
       statusCol,
+      { name: "subscription_count", label: "订阅" },
+      { name: "key_count", label: "Key" },
       { name: "created_at", label: "创建时间" },
     ]}
     createFields={[
@@ -22,9 +25,12 @@ const membersPage = () => (
       { name: "role", label: "角色", kind: "select", options: ["member", "admin"], default: "member" },
     ]}
     editFields={[
+      { name: "name", label: "用户名" },
+      { name: "password", label: "新密码", kind: "password", help: "留空则不修改；重置会注销其他会话" },
       { name: "status", label: "状态", kind: "select", options: ["active", "disabled"] },
       { name: "role", label: "角色", kind: "select", options: ["member", "admin"] },
     ]}
+    rowActions={(row) => <a className="btn small" href={`#/users/${row.id}`}>权益</a>}
   />
 );
 
@@ -131,7 +137,7 @@ const accountsPage = () => (
         reload();
       } catch (err) { alert(String(err)); }
     }}>隔离原因 / 解除</button>}
-    notice={<span className="muted small">OAuth 授权请在“OAuth 会话”页发起；凭证永不回显。存在隔离原因时不能直接激活。</span>}
+    notice={<OAuthStarter />}
   />
 );
 
@@ -196,20 +202,25 @@ const egressPage = () => (
 
 const groupsPage = () => (
   <ResourcePage
-    title="账号组"
-    basePath="/api/admin/groups"
+    title="账号池"
+    basePath="/api/admin/account-pools"
     columns={[
       { name: "name", label: "名称" },
+      { name: "strategy", label: "调度", render: (r) => <Badge value={r.strategy ?? "round_robin"} /> },
       statusCol,
       { name: "accounts", label: "账号", render: (r) => (r.accounts ?? []).join("、") || "—" },
     ]}
-    createFields={[{ name: "name", label: "组名", required: true }]}
+    createFields={[
+      { name: "name", label: "账号池名称", required: true },
+      { name: "description", label: "说明", kind: "textarea" },
+      { name: "strategy", label: "调度策略", kind: "select", options: ["round_robin", "weighted_round_robin", "priority_failover"], default: "round_robin" },
+    ]}
     notice={<GroupAddForm />}
     rowActions={(row, reload) => <GroupRowActions row={row} reload={reload} />}
   />
 );
 
-const GroupAddForm: React.FC = () => <span className="muted small">在组行内“添加账号”；删除组或移除账号请用行内按钮。</span>;
+const GroupAddForm: React.FC = () => <span className="muted small">账号可加入多个池；账号池变更会实时影响已绑定套餐。</span>;
 
 const GroupRowActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload }) => {
   const [accountId, setAccountId] = React.useState("");
@@ -225,7 +236,7 @@ const GroupRowActions: React.FC<{ row: any; reload: () => void }> = ({ row, relo
         className="btn small"
         onClick={async () => {
           if (!accountId) return alert("请输入账号 ID");
-          await api.post(`/api/admin/groups/${row.id}`, { account_id: accountId });
+          await api.post(`/api/admin/account-pools/${row.id}/accounts`, { account_id: accountId });
           setAccountId("");
           reload();
         }}
@@ -236,11 +247,11 @@ const GroupRowActions: React.FC<{ row: any; reload: () => void }> = ({ row, relo
         className="btn small danger"
         onClick={async () => {
           if (!confirm(`删除组 ${row.name}？`)) return;
-          await api.del(`/api/admin/groups/${row.id}`);
+          await api.del(`/api/admin/account-pools/${row.id}`);
           reload();
         }}
       >
-        删除组
+        删除账号池
       </button>
     </span>
   );
@@ -537,6 +548,15 @@ const oauthPage = () => {
   );
 };
 
+const OAuthStarter: React.FC = () => {
+  const [url, setUrl] = useState("");
+  const [sessionId, setSessionId] = useState("");
+  const [status, setStatus] = useState("");
+  return <span className="rule-tester"><button className="btn" onClick={async () => {
+    const r = await api.post<any>("/api/admin/accounts/oauth/sessions", {}); setUrl(r.authorize_url); setSessionId(r.id);
+  }}>OAuth 接入</button>{url && <a className="btn small" href={url} target="_blank" rel="noreferrer">打开授权页</a>}{sessionId && <button className="btn small" onClick={async()=>{const r=await api.get<any>(`/api/admin/accounts/oauth/sessions/${sessionId}`);setStatus(r.status);}}>查询状态</button>}{status && <span className="muted small">{status}</span>}</span>;
+};
+
 const routesPage: React.FC<{ keyId: string }> = ({ keyId }) => (
   <ResourcePage
     title={`路由 · ${keyId}`}
@@ -567,14 +587,13 @@ const routesPage: React.FC<{ keyId: string }> = ({ keyId }) => (
 
 // ── App shell ────────────────────────────────────────────────────────────────
 
-const NAV = [
+const ADMIN_NAV = [
   { key: "#/status", label: "状态", page: statusPage },
-  { key: "#/members", label: "成员", page: membersPage },
-  { key: "#/clients", label: "客户端", page: clientsPage },
-  { key: "#/keys", label: "API Keys", page: keysPage },
+  { key: "#/users", label: "用户管理", page: membersPage },
+  { key: "#/plans", label: "套餐管理", page: AdminPlans },
+  { key: "#/subscriptions", label: "订阅分配", page: AdminSubscriptions },
   { key: "#/accounts", label: "上游账号", page: accountsPage },
-  { key: "#/oauth", label: "OAuth 会话", page: oauthPage },
-  { key: "#/groups", label: "账号组", page: groupsPage },
+  { key: "#/pools", label: "账号池", page: groupsPage },
   { key: "#/proxies", label: "代理出口", page: proxiesPage },
   { key: "#/egress", label: "出口策略", page: egressPage },
   { key: "#/budgets", label: "预算策略", page: budgetsPage },
@@ -586,51 +605,70 @@ const NAV = [
   { key: "#/admin-events", label: "管理事件", page: adminEventsPage },
 ];
 
+const USER_NAV = [
+  { key: "#/overview", label: "我的概览", page: MyOverview },
+  { key: "#/my-keys", label: "我的 Key", page: MyKeys },
+  { key: "#/my-subscriptions", label: "我的订阅", page: MySubscriptions },
+  { key: "#/security", label: "账户安全", page: SecurityPage },
+];
+
+type Identity = { member_id: string; name: string; role: "admin" | "member" };
+
 export const App: React.FC = () => {
-  const [hash, setHash] = useState(location.hash || "#/status");
-	const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [hash, setHash] = useState(location.hash || "");
+	const [identity, setIdentity] = useState<Identity | null | undefined>(undefined);
   useEffect(() => {
     const fn = () => setHash(location.hash || "#/status");
     window.addEventListener("hashchange", fn);
     return () => window.removeEventListener("hashchange", fn);
   }, []);
-	useEffect(() => {
-		api.get("/api/admin/session").then(() => setAuthenticated(true)).catch(() => setAuthenticated(false));
-	}, []);
+  const refreshIdentity = async () => {
+    try { setIdentity(await api.get<Identity>("/api/admin/session")); }
+    catch { setIdentity(null); }
+  };
+	useEffect(() => { refreshIdentity(); }, []);
 
-	if (authenticated === null) return <div className="login-wrap">检查登录状态…</div>;
-  if (!authenticated) return <Login onLoggedIn={() => setAuthenticated(true)} />;
+	if (identity === undefined) return <div className="login-wrap">检查登录状态…</div>;
+  if (!identity) return <Login onLoggedIn={refreshIdentity} />;
 
-  const routeMatch = hash.match(/^#\/routes\/(.+)$/);
+  const navItems = identity.role === "admin" ? ADMIN_NAV : USER_NAV;
+  const defaultHash = identity.role === "admin" ? "#/status" : "#/overview";
+  const activeHash = hash || defaultHash;
+
+  const routeMatch = activeHash.match(/^#\/routes\/(.+)$/);
+  const userMatch = activeHash.match(/^#\/users\/([0-9a-f-]{36})$/i);
   let content: React.ReactNode;
-  if (routeMatch) {
+  if (routeMatch && identity.role === "admin") {
     // Render as element types so each page keeps its own hook state — calling
     // page functions inline would splice their hooks into App's hook list and
     // crash on navigation.
     content = React.createElement(routesPage, { keyId: routeMatch[1] });
+  } else if (userMatch && identity.role === "admin") {
+    content = <AdminUserEntitlements memberId={userMatch[1]} />;
   } else {
-    const nav = NAV.find((n) => hash.startsWith(n.key));
+    const nav = navItems.find((n) => activeHash.startsWith(n.key));
     content = nav ? React.createElement(nav.page) : <div className="muted">未知页面</div>;
   }
 
   return (
     <div className="layout">
       <aside>
-        <div className="brand">SubAI Gateway</div>
+        <div className="brand">SubAI <small>{identity.role === "admin" ? "运营台" : "个人台"}</small></div>
         <nav>
-          {NAV.map((n) => (
-            <a key={n.key} href={n.key} className={hash.startsWith(n.key) ? "active" : ""}>
+          {navItems.map((n) => (
+            <a key={n.key} href={n.key} className={activeHash.startsWith(n.key) ? "active" : ""}>
               {n.label}
             </a>
           ))}
         </nav>
         <div className="grow" />
+        <div className="identity-name">{identity.name}<br/><span>{identity.role === "admin" ? "管理员" : "普通用户"}</span></div>
         <button
           className="btn"
           onClick={async () => {
             await api.del("/api/admin/session");
-			setAuthenticated(false);
-            location.hash = "#/status";
+			setIdentity(null);
+            location.hash = "";
           }}
         >
           退出登录
@@ -641,7 +679,7 @@ export const App: React.FC = () => {
   );
 };
 
-const Login: React.FC<{ onLoggedIn: () => void }> = ({ onLoggedIn }) => {
+const Login: React.FC<{ onLoggedIn: () => void | Promise<void> }> = ({ onLoggedIn }) => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -654,13 +692,13 @@ const Login: React.FC<{ onLoggedIn: () => void }> = ({ onLoggedIn }) => {
           try {
 			await api.post("/api/admin/session", { username, password });
             setError("");
-			onLoggedIn();
+			await onLoggedIn();
           } catch (err: any) {
             setError(err.message);
           }
         }}
       >
-        <h2>SubAI Gateway 管理登录</h2>
+        <h2>SubAI Gateway</h2>
         <label>
           用户名
           <input value={username} onChange={(e) => setUsername(e.target.value)} required />
@@ -673,7 +711,7 @@ const Login: React.FC<{ onLoggedIn: () => void }> = ({ onLoggedIn }) => {
         <button className="btn primary" type="submit">
           登录
         </button>
-        <p className="muted small">登录接口有限流；首次管理员通过 SUBAI_DEV_BOOTSTRAP_ADMIN 或数据库初始化。</p>
+        <p className="muted small">管理员和普通用户使用同一入口；系统会根据角色进入对应控制台。</p>
       </form>
     </div>
   );

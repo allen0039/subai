@@ -368,7 +368,7 @@ func deref(p *string) string {
 func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	limit, offset, _ := pageParams(r, []string{"created_at", "name"})
 	rows, err := s.DB.Pool.Query(r.Context(), `
-		SELECT g.id::text, g.name, g.status, g.version,
+		SELECT g.id::text, g.name, g.description, g.strategy, g.status, g.version,
 		       COALESCE((SELECT array_agg(a.label ORDER BY a.priority) FROM account_group_members m
 		                 JOIN accounts a ON a.id=m.account_id WHERE m.group_id=g.id), '{}')
 		FROM account_groups g ORDER BY g.created_at DESC, g.id LIMIT $1 OFFSET $2`, limit, offset)
@@ -379,29 +379,38 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, name, status string
+		var id, name, description, strategy, status string
 		var version int
 		var accountsList []string
-		if err := rows.Scan(&id, &name, &status, &version, &accountsList); err != nil {
+		if err := rows.Scan(&id, &name, &description, &strategy, &status, &version, &accountsList); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
-		out = append(out, map[string]any{"id": id, "name": name, "status": status, "version": version, "accounts": accountsList})
+		out = append(out, map[string]any{"id": id, "name": name, "description": description, "strategy": strategy, "status": status, "version": version, "accounts": accountsList})
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})
 }
 
 func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Strategy    string `json:"strategy"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 		s.writeErr(w, 400, "name required")
 		return
 	}
+	if req.Strategy == "" {
+		req.Strategy = "round_robin"
+	}
+	if req.Strategy != "round_robin" && req.Strategy != "weighted_round_robin" && req.Strategy != "priority_failover" {
+		s.writeErr(w, 400, "strategy must be round_robin, weighted_round_robin or priority_failover")
+		return
+	}
 	var id string
 	if err := s.DB.Pool.QueryRow(r.Context(),
-		`INSERT INTO account_groups(name) VALUES($1) RETURNING id::text`, req.Name).Scan(&id); err != nil {
+		`INSERT INTO account_groups(name,description,strategy) VALUES($1,$2,$3) RETURNING id::text`, req.Name, req.Description, req.Strategy).Scan(&id); err != nil {
 		s.writeErr(w, 409, err.Error())
 		return
 	}
@@ -414,6 +423,7 @@ func (s *Server) groupAddAccount(w http.ResponseWriter, r *http.Request, groupID
 	var req struct {
 		AccountID string `json:"account_id"`
 		Weight    int    `json:"weight"`
+		Priority  int    `json:"priority"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !resourceUUID.MatchString(req.AccountID) {
 		s.writeErr(w, 400, "valid account_id required")
@@ -423,8 +433,9 @@ func (s *Server) groupAddAccount(w http.ResponseWriter, r *http.Request, groupID
 		req.Weight = 1
 	}
 	if _, err := s.DB.Pool.Exec(r.Context(),
-		`INSERT INTO account_group_members(group_id, account_id, weight) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`,
-		groupID, req.AccountID, req.Weight); err != nil {
+		`INSERT INTO account_group_members(group_id, account_id, weight, priority) VALUES($1,$2,$3,$4)
+		 ON CONFLICT (group_id,account_id) DO UPDATE SET weight=EXCLUDED.weight, priority=EXCLUDED.priority`,
+		groupID, req.AccountID, req.Weight, req.Priority); err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
 	}

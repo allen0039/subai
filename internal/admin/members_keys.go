@@ -14,26 +14,30 @@ import (
 func (s *Server) listMembers(w http.ResponseWriter, r *http.Request) {
 	limit, offset, _ := pageParams(r, []string{"created_at", "name"})
 	rows, err := s.DB.Pool.Query(r.Context(), `
-		SELECT id::text, name, role, status, created_at::text, updated_at::text, version
-		FROM members ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+		SELECT m.id::text, m.name, m.role, m.status, m.created_at::text, m.updated_at::text, m.version,
+		       (SELECT count(*) FROM api_keys k WHERE k.member_id=m.id AND k.status <> 'revoked'),
+		       (SELECT count(*) FROM user_subscriptions us WHERE us.member_id=m.id AND us.status IN ('scheduled','active','suspended'))
+		FROM members m ORDER BY m.created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
 	}
 	defer rows.Close()
 	type member struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		Role      string `json:"role"`
-		Status    string `json:"status"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-		Version   int    `json:"version"`
+		ID                string `json:"id"`
+		Name              string `json:"name"`
+		Role              string `json:"role"`
+		Status            string `json:"status"`
+		CreatedAt         string `json:"created_at"`
+		UpdatedAt         string `json:"updated_at"`
+		Version           int    `json:"version"`
+		KeyCount          int    `json:"key_count"`
+		SubscriptionCount int    `json:"subscription_count"`
 	}
 	out := []member{}
 	for rows.Next() {
 		var m member
-		if err := rows.Scan(&m.ID, &m.Name, &m.Role, &m.Status, &m.CreatedAt, &m.UpdatedAt, &m.Version); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.Role, &m.Status, &m.CreatedAt, &m.UpdatedAt, &m.Version, &m.KeyCount, &m.SubscriptionCount); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
@@ -101,14 +105,26 @@ func (s *Server) patchMember(w http.ResponseWriter, r *http.Request, id string) 
 		args = append(args, *req.Name)
 	}
 	if req.Role != nil {
+		if *req.Role != "admin" && *req.Role != "member" {
+			s.writeErr(w, 400, "role must be admin or member")
+			return
+		}
 		sets = append(sets, "role=$"+itoa(len(args)+2))
 		args = append(args, *req.Role)
 	}
 	if req.Status != nil {
+		if *req.Status != "active" && *req.Status != "disabled" {
+			s.writeErr(w, 400, "status must be active or disabled")
+			return
+		}
 		sets = append(sets, "status=$"+itoa(len(args)+2))
 		args = append(args, *req.Status)
 	}
 	if req.Password != nil {
+		if strings.TrimSpace(*req.Password) == "" {
+			s.writeErr(w, 400, "password must not be empty")
+			return
+		}
 		hash, err := auth.HashPassword(*req.Password)
 		if err != nil {
 			s.writeErr(w, 500, err.Error())
@@ -116,6 +132,25 @@ func (s *Server) patchMember(w http.ResponseWriter, r *http.Request, id string) 
 		}
 		sets = append(sets, "password_hash=$"+itoa(len(args)+2))
 		args = append(args, hash)
+	}
+	// Never allow an update to remove the final active administrator.
+	if (req.Role != nil && *req.Role != "admin") || (req.Status != nil && *req.Status != "active") {
+		var currentRole, currentStatus string
+		if err := s.DB.Pool.QueryRow(r.Context(), `SELECT role,status FROM members WHERE id=$1`, id).Scan(&currentRole, &currentStatus); err != nil {
+			s.writeErr(w, 404, "member not found")
+			return
+		}
+		if currentRole == "admin" && currentStatus == "active" {
+			var n int
+			if err := s.DB.Pool.QueryRow(r.Context(), `SELECT count(*) FROM members WHERE role='admin' AND status='active'`).Scan(&n); err != nil {
+				s.writeErr(w, 500, err.Error())
+				return
+			}
+			if n <= 1 {
+				s.writeErr(w, 409, "cannot disable or demote the last active administrator")
+				return
+			}
+		}
 	}
 	args = append(args, req.Version, id)
 	tag, err := s.DB.Pool.Exec(r.Context(),
@@ -130,6 +165,13 @@ func (s *Server) patchMember(w http.ResponseWriter, r *http.Request, id string) 
 		return
 	}
 	s.notifyMutation()
+	if req.Password != nil || (req.Status != nil && *req.Status == "disabled") || (req.Role != nil && *req.Role != "admin") {
+		if id == actorFrom(r) && req.Password != nil {
+			_ = s.Auth.RevokeOtherMemberSessions(r.Context(), r, id)
+		} else {
+			_ = s.Auth.RevokeMemberSessions(r.Context(), id)
+		}
+	}
 	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "member.update", "member", id,
 		storage.SanitizeForAdminEvent(map[string]any{"version": req.Version}), "")
 	s.writeJSON(w, 200, map[string]bool{"ok": true})

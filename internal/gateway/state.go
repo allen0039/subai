@@ -45,6 +45,17 @@ func (s *StateTracker) Create(ctx context.Context, reqID, keyID, clientReqID str
 	return err
 }
 
+// SetSubscription records the dynamic subscription selected by the Key. It is
+// kept separate from Create to retain compatibility with legacy Keys that have
+// no subscription during the additive migration window.
+func (s *StateTracker) SetSubscription(ctx context.Context, reqID, subscriptionID string) error {
+	if subscriptionID == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE requests SET user_subscription_id=$2::uuid, updated_at=now() WHERE id=$1`, reqID, subscriptionID)
+	return err
+}
+
 // Transition moves the request to `state` with a reason. Transitions to a
 // non-terminal state return the version check failure as error.
 func (s *StateTracker) Transition(ctx context.Context, reqID, state, reason string) error {

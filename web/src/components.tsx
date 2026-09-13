@@ -239,7 +239,7 @@ export function buildCreatePayload(fields: Field[], body: Record<string, any>): 
           continue;
         }
       }
-      if (f.name === "allowed_models" || f.name === "fallback_proxy_ids") {
+      if (f.name === "allowed_models" || f.name === "fallback_proxy_ids" || f.name === "pool_ids") {
         out[f.name] = trimmed.split(",").map((s) => s.trim()).filter(Boolean);
         continue;
       }

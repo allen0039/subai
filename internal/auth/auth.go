@@ -25,16 +25,27 @@ var (
 )
 
 type KeyInfo struct {
-	ID               string
-	MemberID         string
-	MemberStatus     string
-	ClientID         *string
-	Name             string
-	Status           string
-	ExpiresAt        *time.Time
-	ConcurrencyLimit int
-	AllowedModels    []string // nil = all
-	AuditPolicyID    *string
+	ID                string
+	MemberID          string
+	MemberStatus      string
+	ClientID          *string
+	SubscriptionID    string
+	SubscriptionLimit int
+	Name              string
+	Status            string
+	ExpiresAt         *time.Time
+	ConcurrencyLimit  int
+	AllowedModels     []string // nil = all
+	AuditPolicyID     *string
+}
+
+// Identity is the authenticated interactive-console principal. It is separate
+// from KeyInfo: browser users act as themselves, while data-plane requests act
+// through an API key bound to a member/subscription.
+type Identity struct {
+	MemberID string
+	Name     string
+	Role     string
 }
 
 // LookupKey resolves a bearer key. Result is cached briefly to keep the hot
@@ -93,18 +104,45 @@ func (s *Service) InvalidateKeyCache() {
 func (s *Service) lookupKeyDB(ctx context.Context, hash string) (*KeyInfo, error) {
 	row := s.db.Pool.QueryRow(ctx, `
 		SELECT k.id, k.member_id, k.client_id, k.name, k.status, k.expires_at,
-		       k.concurrency_limit, k.allowed_models, k.audit_policy_id, m.status
+		       k.concurrency_limit, k.allowed_models, k.audit_policy_id, m.status,
+		       k.user_subscription_id::text, us.status, us.starts_at, us.expires_at,
+		       COALESCE(us.concurrency_override,pv.concurrency_limit),
+		       COALESCE(us.allowed_models_override,pv.allowed_models)
 		FROM api_keys k JOIN members m ON m.id = k.member_id
+		LEFT JOIN user_subscriptions us ON us.id=k.user_subscription_id AND us.member_id=k.member_id
+		LEFT JOIN plan_versions pv ON pv.id=us.plan_version_id
 		WHERE k.key_hash = $1`, hash)
 	var k KeyInfo
-	var clientID, policyID *string
-	var allowedModels []string
+	var clientID, policyID, subscriptionID, subscriptionStatus *string
+	var subscriptionStarts, subscriptionExpires *time.Time
+	var subscriptionLimit *int
+	var allowedModels, subscriptionModels []string
 	if err := row.Scan(&k.ID, &k.MemberID, &clientID, &k.Name, &k.Status, &k.ExpiresAt,
-		&k.ConcurrencyLimit, &allowedModels, &policyID, &k.MemberStatus); err != nil {
+		&k.ConcurrencyLimit, &allowedModels, &policyID, &k.MemberStatus,
+		&subscriptionID, &subscriptionStatus, &subscriptionStarts, &subscriptionExpires, &subscriptionLimit, &subscriptionModels); err != nil {
 		return nil, ErrInvalidKey
 	}
 	k.ClientID = clientID
 	k.AuditPolicyID = policyID
+	if subscriptionID != nil {
+		if subscriptionStatus == nil || subscriptionStarts == nil || subscriptionExpires == nil || subscriptionLimit == nil || *subscriptionStatus != "active" || time.Now().Before(*subscriptionStarts) || !time.Now().Before(*subscriptionExpires) {
+			return nil, ErrMemberDenied
+		}
+		k.SubscriptionID = *subscriptionID
+		k.SubscriptionLimit = *subscriptionLimit
+		if k.ConcurrencyLimit > *subscriptionLimit {
+			k.ConcurrencyLimit = *subscriptionLimit
+		}
+		// A subscription model list is a hard ceiling. A Key may narrow it but
+		// never expand it, even if a stale admin UI tried to write a wider list.
+		if subscriptionModels != nil {
+			if len(allowedModels) == 0 {
+				allowedModels = subscriptionModels
+			} else if !modelsSubset(allowedModels, subscriptionModels) {
+				return nil, ErrInvalidKey
+			}
+		}
+	}
 	if len(allowedModels) > 0 {
 		k.AllowedModels = allowedModels
 	}
@@ -119,6 +157,22 @@ func (s *Service) lookupKeyDB(ctx context.Context, hash string) (*KeyInfo, error
 		return nil, ErrKeyRevoked
 	}
 	return &k, nil
+}
+
+func modelsSubset(candidate, allowed []string) bool {
+	for _, model := range candidate {
+		found := false
+		for _, permitted := range allowed {
+			if model == permitted {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 type Service struct {
@@ -168,7 +222,7 @@ func (s *Service) Login(ctx context.Context, username, password, ip, userAgent s
 	err = s.db.Pool.QueryRow(ctx,
 		`SELECT id, COALESCE(password_hash,''), role, status FROM members WHERE name=$1`, username).
 		Scan(&memberID, &hash, &role, &status)
-	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil || status != "active" || role != "admin" {
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil || status != "active" {
 		s.recordFail(username + "|" + ip)
 		return "", errors.New("invalid credentials")
 	}
@@ -183,7 +237,7 @@ func (s *Service) Login(ctx context.Context, username, password, ip, userAgent s
 	if err != nil {
 		return "", err
 	}
-	s.db.LogAdminEvent(ctx, "system", "admin.login", "member", memberID, map[string]any{"ip": ip}, "")
+	s.db.LogAdminEvent(ctx, memberID, "member.login", "member", memberID, map[string]any{"ip": ip, "role": role}, "")
 	return token, nil
 }
 
@@ -239,42 +293,73 @@ func (s *Service) pruneLoginFailsLocked(now time.Time) {
 	}
 }
 
-// AdminIdentity authenticates an admin request from the session cookie or
-// Authorization: Bearer <session token> header.
-func (s *Service) AdminIdentity(ctx context.Context, r *http.Request) (memberID string, ok bool) {
+func sessionToken(r *http.Request) string {
 	token := Bearer(r)
 	if token == "" {
 		if c, err := r.Cookie(sessionCookie); err == nil {
 			token = c.Value
 		}
 	}
+	return token
+}
+
+// Identity authenticates any active console user from the session cookie or
+// Authorization bearer token. Role is looked up on every request, so a user
+// disablement or role change takes effect immediately.
+func (s *Service) Identity(ctx context.Context, r *http.Request) (Identity, bool) {
+	token := sessionToken(r)
 	if token == "" {
-		return "", false
+		return Identity{}, false
 	}
 	var mid string
 	err := s.db.Pool.QueryRow(ctx, `
 		SELECT member_id FROM admin_sessions
 		WHERE token_hash=$1 AND expires_at > now()`, storage.HashToken(token)).Scan(&mid)
 	if err != nil {
+		return Identity{}, false
+	}
+	var identity Identity
+	var status string
+	identity.MemberID = mid
+	if err := s.db.Pool.QueryRow(ctx, `SELECT name, role, status FROM members WHERE id=$1`, mid).Scan(&identity.Name, &identity.Role, &status); err != nil || status != "active" {
+		return Identity{}, false
+	}
+	return identity, true
+}
+
+// AdminIdentity preserves the existing admin-only API contract.
+func (s *Service) AdminIdentity(ctx context.Context, r *http.Request) (memberID string, ok bool) {
+	identity, ok := s.Identity(ctx, r)
+	if !ok || identity.Role != "admin" {
 		return "", false
 	}
-	var role, status string
-	if err := s.db.Pool.QueryRow(ctx, `SELECT role, status FROM members WHERE id=$1`, mid).Scan(&role, &status); err != nil || role != "admin" || status != "active" {
-		return "", false
-	}
-	return mid, true
+	return identity.MemberID, true
 }
 
 func (s *Service) Logout(ctx context.Context, r *http.Request) {
-	token := Bearer(r)
-	if token == "" {
-		if c, err := r.Cookie(sessionCookie); err == nil {
-			token = c.Value
-		}
-	}
+	token := sessionToken(r)
 	if token != "" {
 		_, _ = s.db.Pool.Exec(ctx, `DELETE FROM admin_sessions WHERE token_hash=$1`, storage.HashToken(token))
 	}
+}
+
+// RevokeMemberSessions invalidates all interactive sessions for a member.
+// Password resets use it so a stolen browser cookie cannot survive the reset.
+func (s *Service) RevokeMemberSessions(ctx context.Context, memberID string) error {
+	_, err := s.db.Pool.Exec(ctx, `DELETE FROM admin_sessions WHERE member_id=$1`, memberID)
+	return err
+}
+
+// RevokeOtherMemberSessions keeps the caller's current session alive while
+// invalidating all other sessions belonging to the same member.
+func (s *Service) RevokeOtherMemberSessions(ctx context.Context, r *http.Request, memberID string) error {
+	token := sessionToken(r)
+	if token == "" {
+		return s.RevokeMemberSessions(ctx, memberID)
+	}
+	_, err := s.db.Pool.Exec(ctx,
+		`DELETE FROM admin_sessions WHERE member_id=$1 AND token_hash<>$2`, memberID, storage.HashToken(token))
+	return err
 }
 
 func SetSessionCookie(w http.ResponseWriter, token string, maxAge int) {

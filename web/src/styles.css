@@ -1,17 +1,18 @@
 :root {
-  --bg: #0f1420;
-  --panel: #171e2e;
-  --border: #2a3348;
-  --text: #e6ebf4;
-  --muted: #8b96ad;
-  --accent: #4f8cff;
-  --danger: #e5484d;
-  --ok: #46a758;
+  --bg: #0d1524;
+  --panel: #172033;
+  --panel-raised: #1d2940;
+  --border: #2d3c58;
+  --text: #edf3fc;
+  --muted: #91a0b9;
+  --accent: #2f6fed;
+  --danger: #c43d4b;
+  --ok: #11856b;
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: Inter, "Noto Sans SC", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
@@ -29,7 +30,8 @@ aside {
   height: 100vh;
   overflow-y: auto;
 }
-.brand { font-weight: 700; font-size: 16px; margin-bottom: 16px; }
+.brand { font-weight: 750; font-size: 16px; margin-bottom: 16px; letter-spacing: -.02em; }
+.brand small { display:block; color: var(--muted); font-weight: 500; font-size: 11px; margin-top: 3px; letter-spacing: 0; }
 aside nav { display: flex; flex-direction: column; gap: 2px; }
 aside nav a {
   color: var(--muted);
@@ -39,7 +41,7 @@ aside nav a {
 }
 aside nav a:hover { background: #1f2839; color: var(--text); }
 aside nav a.active { background: var(--accent); color: #fff; }
-main { flex: 1; padding: 24px 32px; max-width: 1200px; }
+main { flex: 1; padding: 28px 36px; max-width: 1280px; }
 .grow { flex: 1; }
 
 .page-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -108,3 +110,28 @@ main { flex: 1; padding: 24px 32px; max-width: 1200px; }
 .rule-tester { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .rule-tester input { background: #101623; border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 8px; width: 260px; }
 code { background: #101623; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+.identity-name { border-top: 1px solid var(--border); color: var(--text); font-size: 12px; padding: 12px 8px; margin-top: 12px; }
+.identity-name span { color: var(--muted); font-size: 11px; }
+
+/* User/subscription console: the relationship between a person's entitlement
+   and the resource it controls is the visual signature of this admin UI. */
+.portal { max-width: 1160px; }
+.portal.narrow { max-width: 520px; }
+.portal-hero { padding: 28px 30px; border: 1px solid #38558d; border-radius: 14px; background: linear-gradient(120deg, #172b53 0%, #172033 62%, #10233d 100%); margin-bottom: 20px; position: relative; overflow: hidden; }
+.portal-hero::after { content: "订阅 → Key → 账号池"; position: absolute; right: 24px; bottom: 18px; color: #8eafd9; font-size: 12px; letter-spacing: .08em; }
+.portal-hero > span, .eyebrow { color: #8fb8ff; font-size: 11px; letter-spacing: .11em; text-transform: uppercase; }
+.portal-hero h1 { margin: 7px 0; font-size: 27px; letter-spacing: -.04em; }
+.portal-hero p { margin: 0; color: #bed0ea; }
+.metric-grid { display:grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap:12px; margin: 18px 0; }
+.metric { background: var(--panel); border:1px solid var(--border); border-radius: 10px; padding: 16px; display:flex; flex-direction:column; gap:4px; }
+.metric b { font-size: 25px; color: #c9dcff; }
+.metric span { color:var(--muted); font-size:12px; }
+.section-card { background: var(--panel); border:1px solid var(--border); border-radius: 12px; padding: 18px; }
+.section-title { display:flex; align-items:center; gap:12px; margin-bottom:13px; }.section-title h2{margin:0;font-size:16px}.section-title .btn{margin-left:auto}
+.subscription-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(245px,1fr)); gap:12px; }
+.subscription-card { background: var(--panel-raised); border:1px solid var(--border); border-radius:10px; padding:16px; display:grid; grid-template-columns: 1fr auto; gap:10px; }
+.subscription-card h3 { margin:3px 0 8px; font-size:16px; }.subscription-card small{grid-column:1/-1;color:var(--muted);font-size:11px;line-height:1.5}
+.quota-line { grid-column:1/-1; display:flex; justify-content:space-between; color:var(--muted); border-top:1px solid #2a3852; padding-top:7px; font-size:12px; }.quota-line b{color:var(--text);font-family:"JetBrains Mono",ui-monospace,monospace;font-size:12px}
+.empty-state { color:var(--muted); border:1px dashed var(--border); border-radius:8px; padding:28px; text-align:center; grid-column:1/-1; }
+.form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }.check-list{max-height:160px;overflow:auto;border:1px solid var(--border);border-radius:7px;padding:8px;display:flex;flex-direction:column;gap:7px;color:var(--muted)}.check-list input{width:auto;margin-right:6px}
+@media (max-width: 760px) { aside{width:176px} main{padding:20px 16px}.metric-grid{grid-template-columns:1fr}.portal-hero::after{display:none}.form-grid{grid-template-columns:1fr}.tbl{display:block;overflow-x:auto} }

@@ -21,7 +21,7 @@ docker compose logs -f server
 - 状态页 `#/status`：进行中/unknown 请求计数、账号状态分布；unknown>0 必须人工核对（§18.3）。
 - 账号 `recovery_hold` / `reauth_required` 需管理员处理：前者核对账本后手动恢复 active，后者重新 OAuth。
 - 日志只含路径级请求记录；正文与 Authorization 永不入日志（§9）。
-- 审计事件默认由服务内置保留策略清理；账本不跟随审计日志删除。
+- 审计事件默认保留 14 天（SUBAI_LOG_RETENTION_DAYS）；账本不跟随审计日志删除。
 
 ## 备份
 

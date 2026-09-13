@@ -57,6 +57,22 @@ func (s *Server) RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// RequireSession permits both administrators and ordinary users. Individual
+// "me" handlers are the only non-admin management routes and always derive
+// their target member ID from this identity rather than client input.
+func (s *Server) RequireSession(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := s.Auth.Identity(r.Context(), r)
+		if !ok {
+			s.writeErr(w, http.StatusUnauthorized, "session required")
+			return
+		}
+		ctx := context.WithValue(r.Context(), actorKey, identity.MemberID)
+		ctx = context.WithValue(ctx, identityKey, identity)
+		next(w, r.WithContext(ctx))
+	}
+}
+
 // notifyMutation triggers cache/rule reloads after ANY config-changing write
 // (review round-2: members/keys 等写操作此前未接 Reloader).
 func (s *Server) notifyMutation() {
@@ -73,12 +89,20 @@ type ReadyChecker interface {
 type ctxKey string
 
 const actorKey ctxKey = "actor"
+const identityKey ctxKey = "identity"
 
 func actorFrom(r *http.Request) string {
 	if v, ok := r.Context().Value(actorKey).(string); ok {
 		return v
 	}
 	return "unknown"
+}
+
+func identityFrom(r *http.Request) auth.Identity {
+	if v, ok := r.Context().Value(identityKey).(auth.Identity); ok {
+		return v
+	}
+	return auth.Identity{}
 }
 
 // ── Sessions ─────────────────────────────────────────────────────────────────
@@ -109,12 +133,12 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		auth.SetSessionCookie(w, "", -1)
 		s.writeJSON(w, 200, map[string]bool{"ok": true})
 	case http.MethodGet:
-		mid, ok := s.Auth.AdminIdentity(r.Context(), r)
+		identity, ok := s.Auth.Identity(r.Context(), r)
 		if !ok {
 			s.writeErr(w, 401, "no session")
 			return
 		}
-		s.writeJSON(w, 200, map[string]string{"member_id": mid})
+		s.writeJSON(w, 200, map[string]string{"member_id": identity.MemberID, "name": identity.Name, "role": identity.Role})
 	default:
 		s.writeErr(w, 405, "method not allowed")
 	}

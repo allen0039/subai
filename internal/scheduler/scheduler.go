@@ -38,41 +38,59 @@ type Account struct {
 	Priority          int
 	EgressPolicyID    *string
 	GroupID           string // group the route resolved through ("" for direct account routes)
+	RouteWeight       int    // member weight when selected from a weighted account pool
 	CredentialVersion int
 }
 
 // Slots is the process-local concurrency coordinator (D-007: single active
 // instance holds it; the DB singleton lock guarantees exclusivity).
 type Slots struct {
-	mu      sync.Mutex
-	perKey  map[string]int
-	perAcct map[string]int
+	mu              sync.Mutex
+	perKey          map[string]int
+	perSubscription map[string]int
+	perAcct         map[string]int
 }
 
 func NewSlots() *Slots {
-	return &Slots{perKey: map[string]int{}, perAcct: map[string]int{}}
+	return &Slots{perKey: map[string]int{}, perSubscription: map[string]int{}, perAcct: map[string]int{}}
 }
 
-// Acquire takes a slot in both layers; ok=false when either layer is full.
+// Acquire preserves the original two-layer API for legacy callers.
 func (s *Slots) Acquire(keyID string, keyLimit int, accountID string, accountLimit int) bool {
+	return s.AcquireWithSubscription(keyID, keyLimit, "", 0, accountID, accountLimit)
+}
+
+// AcquireWithSubscription takes slots for the Key, selected subscription and
+// upstream account. A blank subscription ID denotes a legacy Key and skips
+// the middle layer until compatibility migration is complete.
+func (s *Slots) AcquireWithSubscription(keyID string, keyLimit int, subscriptionID string, subscriptionLimit int, accountID string, accountLimit int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if keyLimit > 0 && s.perKey[keyID] >= keyLimit {
+		return false
+	}
+	if subscriptionID != "" && subscriptionLimit > 0 && s.perSubscription[subscriptionID] >= subscriptionLimit {
 		return false
 	}
 	if accountLimit > 0 && s.perAcct[accountID] >= accountLimit {
 		return false
 	}
 	s.perKey[keyID]++
+	if subscriptionID != "" {
+		s.perSubscription[subscriptionID]++
+	}
 	s.perAcct[accountID]++
 	return true
 }
 
-func (s *Slots) Release(keyID, accountID string) {
+func (s *Slots) Release(keyID, subscriptionID, accountID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.perKey[keyID] > 0 {
 		s.perKey[keyID]--
+	}
+	if subscriptionID != "" && s.perSubscription[subscriptionID] > 0 {
+		s.perSubscription[subscriptionID]--
 	}
 	if s.perAcct[accountID] > 0 {
 		s.perAcct[accountID]--
@@ -137,8 +155,30 @@ func (s *Scheduler) RoutesFor(ctx context.Context, keyID string) ([]Route, error
 		return e.routes, nil
 	}
 	s.mu.Unlock()
-	rows, err := s.pool.Query(ctx,
-		`SELECT target_type, target_id::text, priority FROM key_routes WHERE api_key_id=$1 ORDER BY priority ASC, target_id`, keyID)
+	rows, err := s.pool.Query(ctx, `
+		SELECT target_type, target_id::text, priority FROM (
+			-- New Keys: the selected subscription contributes its plan pools.
+			SELECT 'group'::text AS target_type, b.pool_id AS target_id, b.priority
+			FROM api_keys k JOIN user_subscriptions us ON us.id=k.user_subscription_id AND us.member_id=k.member_id
+			JOIN plan_pool_bindings b ON b.plan_version_id=us.plan_version_id
+			WHERE k.id=$1 AND us.status='active' AND us.starts_at<=now() AND us.expires_at>now()
+			UNION ALL
+			-- Explicit user grants apply to every current subscription Key.
+			SELECT 'account'::text, g.account_id, g.priority
+			FROM api_keys k JOIN user_account_grants g ON g.member_id=k.member_id
+			WHERE k.id=$1 AND k.user_subscription_id IS NOT NULL AND g.status='active'
+			  AND g.starts_at<=now() AND (g.expires_at IS NULL OR g.expires_at>now())
+			UNION ALL
+			SELECT 'group'::text, g.pool_id, g.priority
+			FROM api_keys k JOIN user_pool_grants g ON g.member_id=k.member_id
+			WHERE k.id=$1 AND k.user_subscription_id IS NOT NULL AND g.status='active'
+			  AND g.starts_at<=now() AND (g.expires_at IS NULL OR g.expires_at>now())
+			UNION ALL
+			-- Legacy Keys keep their existing routes until data migration finishes.
+			SELECT kr.target_type, kr.target_id, kr.priority
+			FROM key_routes kr JOIN api_keys k ON k.id=kr.api_key_id
+			WHERE kr.api_key_id=$1 AND k.user_subscription_id IS NULL
+		) routes ORDER BY priority ASC, target_id`, keyID)
 	if err != nil {
 		return nil, err
 	}
@@ -164,9 +204,10 @@ func (s *Scheduler) InvalidateRoutes() {
 }
 
 type cand struct {
-	acct  *Account
-	tier  int
-	order int
+	acct   *Account
+	tier   int
+	order  int
+	weight int
 }
 
 // AcquireAccount picks an account for the key and acquires both concurrency
@@ -174,7 +215,13 @@ type cand struct {
 // selected; when the chosen tier is full the next route tier is tried, so a
 // saturated account cannot reject a request another account could serve
 // (review P2-11). Returns a release func (never nil).
+// AcquireAccount preserves the legacy scheduler API for existing callers.
 func (s *Scheduler) AcquireAccount(ctx context.Context, keyID string, keyLimit int, stickyID string) (*Account, func(), error) {
+	return s.AcquireAccountWithSubscription(ctx, keyID, keyLimit, "", 0, stickyID)
+}
+
+// AcquireAccountWithSubscription adds a subscription-wide concurrency layer.
+func (s *Scheduler) AcquireAccountWithSubscription(ctx context.Context, keyID string, keyLimit int, subscriptionID string, subscriptionLimit int, stickyID string) (*Account, func(), error) {
 	noop := func() {}
 	routes, err := s.RoutesFor(ctx, keyID)
 	if err != nil {
@@ -192,7 +239,11 @@ func (s *Scheduler) AcquireAccount(ctx context.Context, keyID string, keyLimit i
 			return // keep the earliest (highest-priority) occurrence
 		}
 		seen[a.ID] = true
-		cands = append(cands, cand{acct: a, tier: tier, order: order})
+		weight := a.RouteWeight
+		if weight < 1 {
+			weight = 1
+		}
+		cands = append(cands, cand{acct: a, tier: tier, order: order, weight: weight})
 		order++
 	}
 	// R5-06: Use Route.Priority as tier, not loop index
@@ -223,8 +274,8 @@ func (s *Scheduler) AcquireAccount(ctx context.Context, keyID string, keyLimit i
 	if stickyID != "" {
 		for _, c := range cands {
 			if c.acct.ID == stickyID {
-				if s.slots.Inflight(stickyID) < s.accountLimit(c.acct) && s.slots.Acquire(keyID, keyLimit, stickyID, s.accountLimit(c.acct)) {
-					return c.acct, s.releaseFunc(keyID, c.acct.ID), nil
+				if s.slots.Inflight(stickyID) < s.accountLimit(c.acct) && s.slots.AcquireWithSubscription(keyID, keyLimit, subscriptionID, subscriptionLimit, stickyID, s.accountLimit(c.acct)) {
+					return c.acct, s.releaseFunc(keyID, subscriptionID, c.acct.ID), nil
 				}
 				break // sticky account unavailable/full: normal selection applies
 			}
@@ -232,7 +283,10 @@ func (s *Scheduler) AcquireAccount(ctx context.Context, keyID string, keyLimit i
 	}
 
 	// Walk route priority tiers in order; within a tier prefer least
-	// inflight, then priority, then rotation among equals (§19).
+	// weighted load, then priority, then rotation among equals (§19).
+	// A weighted pool compares inflight/weight; ordinary pools and direct
+	// accounts have weight 1, so the established least-loaded behavior is
+	// preserved.
 	tierStart := 0
 	for tierStart < len(cands) {
 		tierEnd := tierStart
@@ -240,8 +294,11 @@ func (s *Scheduler) AcquireAccount(ctx context.Context, keyID string, keyLimit i
 			tierEnd++
 		}
 		tier := append([]cand(nil), cands[tierStart:tierEnd]...)
+		loadScore := func(c cand) float64 {
+			return float64(s.slots.Inflight(c.acct.ID)) / float64(c.weight)
+		}
 		sort.SliceStable(tier, func(i, j int) bool {
-			ia, ib := s.slots.Inflight(tier[i].acct.ID), s.slots.Inflight(tier[j].acct.ID)
+			ia, ib := loadScore(tier[i]), loadScore(tier[j])
 			if ia != ib {
 				return ia < ib
 			}
@@ -250,15 +307,18 @@ func (s *Scheduler) AcquireAccount(ctx context.Context, keyID string, keyLimit i
 			}
 			return tier[i].order < tier[j].order
 		})
-		best := -1
+		best := -1.0
+		bestPriority := 0
 		var ties []cand
 		for _, c := range tier {
 			infl := s.slots.Inflight(c.acct.ID)
 			if s.accountLimit(c.acct) > 0 && infl >= s.accountLimit(c.acct) {
 				continue // full: never selected
 			}
-			if best == -1 || (infl == best && c.acct.Priority == ties[0].acct.Priority) {
-				best = infl
+			score := loadScore(c)
+			if best < 0 || (score == best && c.acct.Priority == bestPriority) {
+				best = score
+				bestPriority = c.acct.Priority
 				ties = append(ties, c)
 			} else {
 				break
@@ -270,8 +330,8 @@ func (s *Scheduler) AcquireAccount(ctx context.Context, keyID string, keyLimit i
 		}
 		for i := range ties {
 			c := ties[(i+start)%len(ties)]
-			if s.slots.Acquire(keyID, keyLimit, c.acct.ID, s.accountLimit(c.acct)) {
-				return c.acct, s.releaseFunc(keyID, c.acct.ID), nil
+			if s.slots.AcquireWithSubscription(keyID, keyLimit, subscriptionID, subscriptionLimit, c.acct.ID, s.accountLimit(c.acct)) {
+				return c.acct, s.releaseFunc(keyID, subscriptionID, c.acct.ID), nil
 			}
 			// lost the race for this slot: try the next tie
 		}
@@ -280,8 +340,8 @@ func (s *Scheduler) AcquireAccount(ctx context.Context, keyID string, keyLimit i
 	return nil, noop, ErrConcurrency
 }
 
-func (s *Scheduler) releaseFunc(keyID, accountID string) func() {
-	return func() { s.slots.Release(keyID, accountID) }
+func (s *Scheduler) releaseFunc(keyID, subscriptionID, accountID string) func() {
+	return func() { s.slots.Release(keyID, subscriptionID, accountID) }
 }
 
 func (s *Scheduler) rotate(keyID string) int {
@@ -307,7 +367,8 @@ func (s *Scheduler) loadAccount(ctx context.Context, id, groupID string) (*Accou
 
 func (s *Scheduler) groupAccounts(ctx context.Context, groupID string) ([]*Account, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT a.id, a.label, a.state, a.concurrency_limit, a.priority, a.egress_policy_id, a.credential_version
+		SELECT a.id, a.label, a.state, a.concurrency_limit, a.priority, a.egress_policy_id, a.credential_version,
+		       g.strategy, m.weight, m.priority
 		FROM account_group_members m JOIN accounts a ON a.id = m.account_id
 		JOIN account_groups g ON g.id = m.group_id
 		WHERE m.group_id=$1 AND a.state='active' AND g.status='active'
@@ -320,8 +381,21 @@ func (s *Scheduler) groupAccounts(ctx context.Context, groupID string) ([]*Accou
 	var out []*Account
 	for rows.Next() {
 		var a Account
-		if err := rows.Scan(&a.ID, &a.Label, &a.State, &a.ConcurrencyLimit, &a.Priority, &a.EgressPolicyID, &a.CredentialVersion); err != nil {
+		var strategy string
+		var memberWeight, memberPriority int
+		if err := rows.Scan(&a.ID, &a.Label, &a.State, &a.ConcurrencyLimit, &a.Priority, &a.EgressPolicyID, &a.CredentialVersion, &strategy, &memberWeight, &memberPriority); err != nil {
 			return nil, err
+		}
+		// Pool-local settings deliberately override global account priority: an
+		// account can participate in several pools with different strategies.
+		switch strategy {
+		case "weighted_round_robin":
+			a.Priority = 100
+			a.RouteWeight = memberWeight
+		case "priority_failover":
+			a.Priority = memberPriority
+		default: // round_robin
+			a.Priority = 100
 		}
 		out = append(out, &a)
 	}

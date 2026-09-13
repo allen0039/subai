@@ -159,7 +159,7 @@ func fixedFeeTotal(fixed map[string]any) (decimal.Decimal, error) {
 type PolicyScope struct {
 	PolicyID    string
 	OwnerType   string
-	PeriodType  string // day|week
+	PeriodType  string // day|week|month
 	Timezone    string
 	Limit       decimal.Decimal
 	periodStart time.Time
@@ -179,6 +179,7 @@ func applicablePolicies(ctx context.Context, tx pgx.Tx, memberID, keyID, account
 		 OR (p.owner_type='group' AND p.owner_group_id=$4)
 		 OR (p.owner_type='key_account' AND p.owner_key_id=$2 AND p.owner_account_id=$3)
 		 OR (p.owner_type='key_group' AND p.owner_key_id=$2 AND p.owner_group_id=$4)
+		 OR (p.owner_type='subscription' AND p.owner_subscription_id=(SELECT user_subscription_id FROM api_keys WHERE id=$2))
 		)`, memberID, keyID, nullIfEmpty(accountID), nullIfEmpty(groupID))
 	if err != nil {
 		return nil, err
@@ -278,6 +279,9 @@ func ensurePeriod(ctx context.Context, tx pgx.Tx, s *PolicyScope, now time.Time)
 		}
 		start = start.AddDate(0, 0, -(weekday - 1)) // Monday 00:00 in policy tz
 		end = start.AddDate(0, 0, 7)
+	} else if s.PeriodType == "month" {
+		start = time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc)
+		end = start.AddDate(0, 1, 0)
 	} else {
 		end = start.AddDate(0, 0, 1)
 	}

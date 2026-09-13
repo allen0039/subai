@@ -16,6 +16,35 @@ func (s *Server) Routes() http.Handler {
 	// Public: login only. The OAuth callback is mounted on the OUTER mux by
 	// internal/server so it is reachable in production too (review P1-6).
 	mux.HandleFunc("/api/admin/session", s.handleSession)
+	mux.Handle("/api/admin/me/password", s.RequireSession(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			s.writeErr(w, 405, "method not allowed")
+			return
+		}
+		s.changeOwnPassword(w, r)
+	}))
+	mux.Handle("/api/admin/me/subscriptions", s.RequireSession(getOnly(func(w http.ResponseWriter, r *http.Request) {
+		s.listSubscriptions(w, r, identityFrom(r).MemberID)
+	})))
+	mux.Handle("/api/admin/me/keys", s.RequireSession(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			s.listOwnKeys(w, r)
+		case http.MethodPost:
+			s.createOwnKey(w, r)
+		default:
+			s.writeErr(w, 405, "method not allowed")
+		}
+	}))
+	mux.Handle("/api/admin/me/keys/", s.RequireSession(func(w http.ResponseWriter, r *http.Request) {
+		rest := pathID(r, "/api/admin/me/keys/")
+		id := strings.TrimSuffix(rest, "/revoke")
+		if !resourceUUID.MatchString(id) {
+			s.writeErr(w, 400, "invalid key ID")
+			return
+		}
+		s.ownKey(w, r, id)
+	}))
 
 	// Authenticated management surface.
 	mux.Handle("/api/admin/members", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +68,148 @@ func (s *Server) Routes() http.Handler {
 			return
 		}
 		s.patchMember(w, r, id)
+	}))
+	// "users" is the new product vocabulary. The legacy members endpoints
+	// remain available to existing automations during the migration.
+	mux.Handle("/api/admin/users", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			s.listMembers(w, r)
+		case http.MethodPost:
+			s.createMember(w, r)
+		default:
+			s.writeErr(w, 405, "method not allowed")
+		}
+	}))
+	mux.Handle("/api/admin/users/", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		rest := pathID(r, "/api/admin/users/")
+		parts := strings.Split(rest, "/")
+		if len(parts) < 1 || !resourceUUID.MatchString(parts[0]) {
+			s.writeErr(w, 400, "invalid user ID")
+			return
+		}
+		if len(parts) == 1 {
+			if r.Method != http.MethodPatch {
+				s.writeErr(w, 405, "method not allowed")
+				return
+			}
+			s.patchMember(w, r, parts[0])
+			return
+		}
+		if len(parts) == 2 && parts[1] == "subscriptions" {
+			if r.Method != http.MethodGet {
+				s.writeErr(w, 405, "method not allowed")
+				return
+			}
+			s.listSubscriptions(w, r, parts[0])
+			return
+		}
+		if len(parts) == 2 && (parts[1] == "account-grants" || parts[1] == "pool-grants") {
+			kind := "account"
+			if parts[1] == "pool-grants" {
+				kind = "pool"
+			}
+			switch r.Method {
+			case http.MethodGet:
+				s.listUserGrants(w, r, parts[0], kind)
+			case http.MethodPost:
+				s.createUserGrant(w, r, parts[0], kind)
+			default:
+				s.writeErr(w, 405, "method not allowed")
+			}
+			return
+		}
+		if len(parts) == 3 && (parts[1] == "account-grants" || parts[1] == "pool-grants") && resourceUUID.MatchString(parts[2]) {
+			if r.Method != http.MethodPatch {
+				s.writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			kind := "account"
+			if parts[1] == "pool-grants" {
+				kind = "pool"
+			}
+			s.patchUserGrant(w, r, parts[0], kind, parts[2])
+			return
+		}
+		s.writeErr(w, 404, "unknown user action")
+	}))
+
+	mux.Handle("/api/admin/account-pools", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			s.listGroups(w, r)
+		case http.MethodPost:
+			s.createGroup(w, r)
+		default:
+			s.writeErr(w, 405, "method not allowed")
+		}
+	}))
+	mux.Handle("/api/admin/account-pools/", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		rest := pathID(r, "/api/admin/account-pools/")
+		parts := strings.Split(rest, "/")
+		if len(parts) < 1 || !resourceUUID.MatchString(parts[0]) {
+			s.writeErr(w, 400, "invalid account pool ID")
+			return
+		}
+		switch {
+		case len(parts) == 1 && r.Method == http.MethodDelete:
+			s.deleteGroup(w, r, parts[0])
+		case len(parts) == 2 && parts[1] == "accounts" && r.Method == http.MethodPost:
+			s.groupAddAccount(w, r, parts[0])
+		case len(parts) == 3 && parts[1] == "accounts" && r.Method == http.MethodDelete && resourceUUID.MatchString(parts[2]):
+			s.groupRemoveAccount(w, r, parts[0], parts[2])
+		default:
+			s.writeErr(w, 405, "method not allowed")
+		}
+	}))
+
+	mux.Handle("/api/admin/plans", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			s.listPlans(w, r)
+		case http.MethodPost:
+			s.createPlan(w, r)
+		default:
+			s.writeErr(w, 405, "method not allowed")
+		}
+	}))
+	mux.Handle("/api/admin/plans/", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		rest := pathID(r, "/api/admin/plans/")
+		parts := strings.Split(rest, "/")
+		if len(parts) < 1 || !resourceUUID.MatchString(parts[0]) {
+			s.writeErr(w, 400, "invalid plan ID")
+			return
+		}
+		switch {
+		case len(parts) == 2 && parts[1] == "publish" && r.Method == http.MethodPost:
+			s.publishPlan(w, r, parts[0])
+		case len(parts) == 2 && parts[1] == "versions" && r.Method == http.MethodPost:
+			s.createPlanVersion(w, r, parts[0])
+		default:
+			s.writeErr(w, 405, "method not allowed")
+		}
+	}))
+	mux.Handle("/api/admin/subscriptions", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			s.listSubscriptions(w, r, "")
+		case http.MethodPost:
+			s.createSubscription(w, r)
+		default:
+			s.writeErr(w, 405, "method not allowed")
+		}
+	}))
+	mux.Handle("/api/admin/subscriptions/", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		id := pathID(r, "/api/admin/subscriptions/")
+		if !resourceUUID.MatchString(id) {
+			s.writeErr(w, 400, "invalid subscription ID")
+			return
+		}
+		if r.Method != http.MethodPatch {
+			s.writeErr(w, 405, "method not allowed")
+			return
+		}
+		s.patchSubscription(w, r, id)
 	}))
 
 	mux.Handle("/api/admin/clients", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {

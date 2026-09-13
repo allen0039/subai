@@ -1,8 +1,8 @@
 # SubAI 独立网关
 
-个人/受控成员 AI 网关：多 Codex 账号池、独立 API Key、内部美元预算、双层并发、每账号出口隔离、前置审核（本地规则 + 官方 Moderation）。
+个人/受控成员 AI 网关：多 Codex 账号池、独立 API Key、内部美元预算、双层并发、每账号出口隔离、前置审核（本地规则 + 官方 Moderation）。规格见 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) v0.2。
 
-**当前状态**：第一版实现可用于开发和受控验证；上游 Codex、OAuth 与 Moderation 的真实凭证联调尚未完成，因此不应将本项目直接用于生产流量。详见 [已知限制](docs/KNOWN_LIMITATIONS.md) 与 [兼容矩阵](docs/COMPATIBILITY.md)。
+**当前状态**：第一版实现完成（P1–P5 全部、P6 部署框架），真实联调项（P0-01..04）因缺少真实凭证标记 blocked。开始前必读 [docs/REVIEW_HANDOFF.md](docs/REVIEW_HANDOFF.md) 与 [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)。
 
 ## 架构
 
@@ -39,11 +39,16 @@ cd deploy && cp .env.example .env && docker compose up -d --build
 
 ## 目录
 
-`cmd/server`、`internal/{auth,accounts,egress,gateway,audit,billing,scheduler,admin,storage,config}`、`migrations/`、`rules/defaults/`、`tests/{fixtures,integration}/`、`web/`、`deploy/`、`docs/`。
+见计划 §15；实现完全对应：`cmd/server`、`internal/{auth,accounts,egress,gateway,audit,billing,scheduler,admin,storage,config}`、`migrations/`、`rules/defaults/`、`tests/{fixtures,integration}/`、`web/`、`deploy/`、`docs/`。
 
 ## 关键文档
 
 - [docs/API.md](docs/API.md) — 数据面与管理面端点、错误映射
 - [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — 兼容矩阵（verified/mock_only/unsupported/pending）
+- [docs/BILLING_BOUNDS.md](docs/BILLING_BOUNDS.md) — 严格预算与费用上界
+- [docs/AUDIT_CAPACITY.md](docs/AUDIT_CAPACITY.md) — 审核容量与队列参数
+- [docs/PRICE_SOURCE.md](docs/PRICE_SOURCE.md) — 价格同步现状
+- [docs/DECISIONS.md](docs/DECISIONS.md) — 设计决策（D-001..D-010）
 - [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) — 已知限制
+- [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) — P0-01..P6-02 状态与证据
 - [deploy/README.md](deploy/README.md) — 运行、备份恢复手册
