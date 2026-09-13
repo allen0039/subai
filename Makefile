@@ -4,7 +4,24 @@ SHELL := /bin/bash
 TEST_DB_URL ?= postgres://subai:subai@localhost:54329/subai?sslmode=disable
 TEST_PG_CONTAINER := subai-test-pg
 
-.PHONY: help lint test test-integration build migrate dev dev-web compose-up compose-down clean test-pg-up test-pg-down
+.PHONY: help lint test test-integration build migrate dev dev-web compose-up compose-down deploy pull-update clean test-pg-up test-pg-down
+
+# One-shot release: commit/push first, wait for Actions to finish, then run
+# `make deploy`. Runs CI remotely and updates Oracle3 when the image is ready.
+deploy:
+	@test -z "$$(git status --porcelain)" || (echo "working tree not clean; commit first" && exit 1)
+	git push origin main
+	$(MAKE) ci-watch
+	ssh oracle3 'cd /opt/1panel/docker/compose/subai && docker compose pull server && docker compose up -d && docker ps --filter name=subai-server --format "{{.Image}} {{.Status}}"'
+
+# Pull the newest GHCR image on Oracle3 (use after CI has already published).
+pull-update:
+	ssh oracle3 'cd /opt/1panel/docker/compose/subai && docker compose pull server && docker compose up -d && docker ps --filter name=subai-server --format "{{.Image}} {{.Status}}"'
+
+# Watch the latest CI run for the current commit until it completes.
+ci-watch:
+	@run=$$(gh run list --repo allen0039/subai --branch main --limit 1 --json databaseId -q '.[0].databaseId'); \
+	gh run watch $$run --repo allen0039/subai --exit-status
 
 help:
 	@echo "lint              - go vet + gofmt check"
@@ -13,7 +30,9 @@ help:
 	@echo "build             - build server binary and admin UI"
 	@echo "migrate           - apply migrations (SUBAI_DATABASE_URL)"
 	@echo "dev               - run server locally (needs SUBAI_MASTER_KEY and PostgreSQL)"
-	@echo "dev-web           - run admin UI dev server with API proxy"
+	@echo "compose-up        - local compose dev stack"
+	@echo "deploy            - push to main, wait for CI image, update Oracle3"
+	@echo "pull-update       - pull newest image on Oracle3 (after CI done)"
 
 lint:
 	go vet ./...
