@@ -99,9 +99,13 @@ func (s *Server) patchMember(w http.ResponseWriter, r *http.Request, id string) 
 		return
 	}
 	sets := []string{"version = version + 1"}
-	args := []any{}
+	// Keep the record id at $1.  Dynamic fields then consume $2 onward and
+	// the optimistic-lock version is appended last.  Starting with an empty
+	// argument list made the first submitted field bind to $2 while $1 had no
+	// context/type, which PostgreSQL correctly rejects (SQLSTATE 42P18).
+	args := []any{id}
 	if req.Name != nil {
-		sets = append(sets, "name=$"+itoa(len(args)+2))
+		sets = append(sets, "name=$"+itoa(len(args)+1))
 		args = append(args, *req.Name)
 	}
 	if req.Role != nil {
@@ -109,7 +113,7 @@ func (s *Server) patchMember(w http.ResponseWriter, r *http.Request, id string) 
 			s.writeErr(w, 400, "role must be admin or member")
 			return
 		}
-		sets = append(sets, "role=$"+itoa(len(args)+2))
+		sets = append(sets, "role=$"+itoa(len(args)+1))
 		args = append(args, *req.Role)
 	}
 	if req.Status != nil {
@@ -117,7 +121,7 @@ func (s *Server) patchMember(w http.ResponseWriter, r *http.Request, id string) 
 			s.writeErr(w, 400, "status must be active or disabled")
 			return
 		}
-		sets = append(sets, "status=$"+itoa(len(args)+2))
+		sets = append(sets, "status=$"+itoa(len(args)+1))
 		args = append(args, *req.Status)
 	}
 	if req.Password != nil {
@@ -130,7 +134,7 @@ func (s *Server) patchMember(w http.ResponseWriter, r *http.Request, id string) 
 			s.writeErr(w, 500, err.Error())
 			return
 		}
-		sets = append(sets, "password_hash=$"+itoa(len(args)+2))
+		sets = append(sets, "password_hash=$"+itoa(len(args)+1))
 		args = append(args, hash)
 	}
 	// Never allow an update to remove the final active administrator.
@@ -152,10 +156,9 @@ func (s *Server) patchMember(w http.ResponseWriter, r *http.Request, id string) 
 			}
 		}
 	}
-	args = append(args, req.Version, id)
+	args = append(args, req.Version)
 	tag, err := s.DB.Pool.Exec(r.Context(),
-		`UPDATE members SET `+strings.Join(sets, ", ")+` WHERE id=$`+itoa(len(args))+
-			` AND version=$`+itoa(len(args)-1), args...)
+		`UPDATE members SET `+strings.Join(sets, ", ")+` WHERE id=$1 AND version=$`+itoa(len(args)), args...)
 	if err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
