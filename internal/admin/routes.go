@@ -313,11 +313,14 @@ func (s *Server) Routes() http.Handler {
 			s.writeErr(w, 400, "invalid proxy ID")
 			return
 		}
-		if r.Method != http.MethodPatch {
+		switch r.Method {
+		case http.MethodPatch:
+			s.patchProxy(w, r, id)
+		case http.MethodDelete:
+			s.deleteProxy(w, r, id)
+		default:
 			s.writeErr(w, 405, "method not allowed")
-			return
 		}
-		s.patchProxy(w, r, id)
 	}))
 
 	mux.Handle("/api/admin/egress-policies", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {

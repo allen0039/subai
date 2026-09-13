@@ -10,6 +10,7 @@ export interface Field {
   label: string;
   kind?: FieldKind;
   options?: string[];
+  optionsPath?: string;
   required?: boolean;
   placeholder?: string;
   help?: string;
@@ -118,12 +119,14 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
 
   const doPatch = async () => {
     try {
-      await api.patch(`${basePath}/${editRow.id}`, { ...editBody, version: editRow.version });
+      const patch = { ...editBody };
+      if (patch.proxy_id === "") delete patch.proxy_id;
+      await api.patch(`${basePath}/${editRow.id}`, { ...patch, version: editRow.version });
       setEditRow(null);
       setFlash("已更新");
       load(offset);
     } catch (e: any) {
-      setError(e.status === 409 ? "版本冲突（409）：数据已被他人修改，请刷新后重试" : e.message);
+      setError(e.message);
     }
   };
 
@@ -184,6 +187,7 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
                     <button
                       className="btn small"
                       onClick={() => {
+                        setError(null);
                         setEditRow(row);
                         setEditBody({});
                       }}
@@ -208,7 +212,7 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
       )}
       {editRow && editFields && (
         <Modal title={`编辑 · ${title}`} onClose={() => setEditRow(null)} onSubmit={doPatch}>
-          <div className="muted small">乐观锁版本 v{editRow.version}，提交后自动 +1</div>
+          {error && <div className="error" role="alert">{error}</div>}
           {editFields.map((f) => (
             <FormField key={f.name} field={f} value={editBody[f.name] ?? editRow[f.name] ?? ""} onChange={(v) => setEditBody((b) => ({ ...b, [f.name]: v }))} />
           ))}
@@ -257,6 +261,22 @@ export const FormField: React.FC<{ field: Field; value: any; onChange: (v: any) 
   onChange,
 }) => {
   const { kind = "text", label, options, required, placeholder, help } = field;
+  const [remoteOptions, setRemoteOptions] = useState<any[]>([]);
+  const [optionsError, setOptionsError] = useState("");
+  useEffect(() => {
+    if (!field.optionsPath) return;
+    let cancelled = false;
+    (async () => {
+      const rows: any[] = [];
+      for (let offset = 0; ; offset += 100) {
+        const result = await api.get<ListResponse>(`${field.optionsPath}?limit=100&offset=${offset}`);
+        rows.push(...result.data);
+        if (result.data.length < 100) break;
+      }
+      if (!cancelled) setRemoteOptions(rows);
+    })().catch(e => { if (!cancelled) setOptionsError(e.message); });
+    return () => { cancelled = true; };
+  }, [field.optionsPath]);
   return (
     <label className="field">
       <span className="field-label">
@@ -266,6 +286,7 @@ export const FormField: React.FC<{ field: Field; value: any; onChange: (v: any) 
       {kind === "select" ? (
         <select value={value ?? ""} onChange={(e) => onChange(e.target.value)} required={required}>
           <option value="">—</option>
+          {field.optionsPath && remoteOptions.map(o => <option key={o.id} value={o.id} disabled={o.status === "disabled"}>{o.name}{o.endpoint ? ` · ${o.endpoint}` : ""}{o.primary ? ` · ${o.primary}` : ""}{o.status === "disabled" ? "（已禁用）" : ""}</option>)}
           {(options ?? []).map((o) => (
             <option key={o} value={o}>
               {o}
@@ -285,6 +306,7 @@ export const FormField: React.FC<{ field: Field; value: any; onChange: (v: any) 
           required={required}
         />
       )}
+      {optionsError && <span className="error">{optionsError}</span>}
       {help && <span className="help">{help}</span>}
     </label>
   );

@@ -108,6 +108,7 @@ const accountsPage = () => (
       { name: "state", label: "状态", render: (r) => <Badge value={r.state} /> },
       { name: "concurrency_limit", label: "并发上限" },
       { name: "priority", label: "优先级" },
+      { name: "proxy_name", label: "当前代理" },
       { name: "credential_version", label: "凭证版本" },
       { name: "expires_at", label: "凭证到期" },
     ]}
@@ -120,6 +121,8 @@ const accountsPage = () => (
       { name: "egress_policy_id", label: "出口策略 ID（可选）" },
     ]}
     editFields={[
+      { name: "label", label: "标签", required: true },
+      { name: "proxy_id", label: "切换代理", kind: "select", optionsPath: "/api/admin/proxies", help: "不选择则保留当前出口策略；选择后使用该代理，故障即停止" },
       { name: "state", label: "状态", kind: "select", options: ["active", "paused"] },
       { name: "concurrency_limit", label: "并发上限", kind: "number" },
       { name: "priority", label: "优先级", kind: "number" },
@@ -158,18 +161,32 @@ const proxiesPage = () => (
       { name: "username", label: "用户名（可选）" },
       { name: "password", label: "密码（可选）", kind: "password" },
     ]}
-    editFields={[{ name: "status", label: "状态", kind: "select", options: ["active", "disabled"] }]}
+    editFields={[
+      { name: "name", label: "名称", required: true },
+      { name: "kind", label: "类型", kind: "select", options: ["direct", "http", "socks5"], required: true },
+      { name: "endpoint", label: "地址（direct 留空）", placeholder: "host:port" },
+      { name: "username", label: "新用户名", help: "不修改则保留原用户名" },
+      { name: "password", label: "新密码", kind: "password", help: "留空则保留原密码" },
+      { name: "clear_credentials", label: "清除代理用户名和密码", kind: "checkbox" },
+      { name: "status", label: "状态", kind: "select", options: ["active", "disabled"], required: true },
+    ]}
     rowActions={(row, reload) => (
-      <button
+      <><button className="btn small danger" onClick={async () => {
+        if (!confirm(`确认删除代理“${row.name}”？`)) return;
+        try { await api.del(`/api/admin/proxies/${row.id}`, {version: row.version}); reload(); }
+        catch (err) { alert(String(err)); }
+      }}>删除</button><button
         className="btn small"
         onClick={async () => {
-          const r = await api.post<any>(`/api/admin/proxies/${row.id}/test`);
-          alert(r.ok ? `探测成功 (${r.status ?? 204})` : `探测失败：${r.error}`);
-          reload();
+          try {
+            const r = await api.post<any>(`/api/admin/proxies/${row.id}/test`);
+            alert(r.ok ? `探测成功 (${r.status ?? 204})` : `探测失败：${r.error}`);
+            reload();
+          } catch (err) { alert(String(err)); }
         }}
       >
         探测
-      </button>
+      </button></>
     )}
   />
 );

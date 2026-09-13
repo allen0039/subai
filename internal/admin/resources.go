@@ -86,22 +86,118 @@ func (s *Server) createProxy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) patchProxy(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
-		Status  *string `json:"status"`
-		Version int     `json:"version"`
+		Name             *string `json:"name"`
+		Kind             *string `json:"kind"`
+		Endpoint         *string `json:"endpoint"`
+		Username         *string `json:"username"`
+		Password         *string `json:"password"`
+		ClearCredentials bool    `json:"clear_credentials"`
+		Status           *string `json:"status"`
+		Version          int     `json:"version"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || expectVersion(req.Version) != nil {
 		s.writeErr(w, 400, "version required")
 		return
 	}
-	tag, err := s.DB.Pool.Exec(r.Context(),
-		`UPDATE proxy_profiles SET status=COALESCE($2,status), version=version+1, updated_at=now() WHERE id=$1 AND version=$3`,
-		id, req.Status, req.Version)
-	if err != nil || tag.RowsAffected() == 0 {
+	tx, err := s.DB.Pool.Begin(r.Context())
+	if err != nil {
+		s.writeErr(w, 500, "begin proxy update failed")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var name, kind, endpoint, status string
+	var sealed []byte
+	var version int
+	err = tx.QueryRow(r.Context(), `SELECT name,kind,COALESCE(endpoint,''),status,credentials_ciphertext,version FROM proxy_profiles WHERE id=$1 FOR UPDATE`, id).Scan(&name, &kind, &endpoint, &status, &sealed, &version)
+	if err != nil || version != req.Version {
 		s.writeErr(w, 409, "version conflict or proxy not found")
+		return
+	}
+	if req.Name != nil {
+		name = strings.TrimSpace(*req.Name)
+	}
+	if req.Kind != nil {
+		kind = *req.Kind
+	}
+	if req.Endpoint != nil {
+		endpoint = strings.TrimSpace(*req.Endpoint)
+	}
+	if req.Status != nil {
+		status = *req.Status
+	}
+	if name == "" || (status != "active" && status != "disabled") {
+		s.writeErr(w, 400, "名称不能为空，状态必须为 active 或 disabled")
+		return
+	}
+	switch kind {
+	case "direct":
+		endpoint = ""
+	case "http", "socks5":
+		if endpoint == "" {
+			s.writeErr(w, 400, "代理地址不能为空")
+			return
+		}
+	default:
+		s.writeErr(w, 400, "kind must be direct|http|socks5")
+		return
+	}
+	if req.ClearCredentials || kind == "direct" {
+		sealed = nil
+	} else if req.Username != nil || req.Password != nil {
+		creds := map[string]string{}
+		if len(sealed) > 0 {
+			plain, err := s.DB.Decrypt(sealed)
+			if err != nil {
+				s.writeErr(w, 500, "读取代理凭据失败")
+				return
+			}
+			if err := json.Unmarshal(plain, &creds); err != nil {
+				s.writeErr(w, 500, "读取代理凭据失败")
+				return
+			}
+		}
+		if req.Username != nil {
+			creds["Username"] = *req.Username
+		}
+		if req.Password != nil && *req.Password != "" {
+			creds["Password"] = *req.Password
+		}
+		plain, _ := json.Marshal(creds)
+		sealed, err = s.DB.Encrypt(plain)
+		if err != nil {
+			s.writeErr(w, 500, "保存代理凭据失败")
+			return
+		}
+	}
+	_, err = tx.Exec(r.Context(), `UPDATE proxy_profiles SET name=$2,kind=$3,endpoint=NULLIF($4,''),status=$5,credentials_ciphertext=$6,version=version+1,updated_at=now() WHERE id=$1`, id, name, kind, endpoint, status, sealed)
+	if err != nil {
+		s.writeErr(w, 409, "保存代理失败，请检查名称是否重复")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		s.writeErr(w, 500, "commit proxy update failed")
 		return
 	}
 	s.notifyMutation()
 	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "proxy.update", "proxy_profile", id, nil, "")
+	s.writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *Server) deleteProxy(w http.ResponseWriter, r *http.Request, id string) {
+	var req struct {
+		Version int `json:"version"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || expectVersion(req.Version) != nil {
+		s.writeErr(w, 400, "version required")
+		return
+	}
+	tag, err := s.DB.Pool.Exec(r.Context(), `DELETE FROM proxy_profiles WHERE id=$1 AND version=$2 AND NOT EXISTS (SELECT 1 FROM egress_policies WHERE primary_proxy_id=$1 OR $1=ANY(ordered_fallback_proxy_ids))`, id, req.Version)
+	if err != nil || tag.RowsAffected() == 0 {
+		s.writeErr(w, 409, "无法删除：代理仍被出口策略使用，或数据已更新。请先修改相关策略并刷新。")
+		return
+	}
+	s.notifyMutation()
+	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "proxy.delete", "proxy_profile", id, nil, "")
 	s.writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -219,8 +315,8 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.DB.Pool.Query(r.Context(), `
 		SELECT a.id::text, a.provider, a.label, a.state, a.concurrency_limit, a.priority,
 		       COALESCE(a.egress_policy_id::text,''), a.credential_version, COALESCE(a.expires_at::text,''),
-		       a.version, a.created_at::text
-		FROM accounts a ORDER BY a.created_at DESC, a.id LIMIT $1 OFFSET $2`, limit, offset)
+		       a.version, a.created_at::text, COALESCE(ep.name,'未配置'), COALESCE(pp.name,'未配置')
+		FROM accounts a LEFT JOIN egress_policies ep ON ep.id=a.egress_policy_id LEFT JOIN proxy_profiles pp ON pp.id=ep.primary_proxy_id ORDER BY a.created_at DESC, a.id LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
@@ -228,15 +324,16 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, provider, label, state, egress, expires, created string
+		var id, provider, label, state, egress, expires, created, policyName, proxyName string
 		var limit, priority, credVersion, version int
-		if err := rows.Scan(&id, &provider, &label, &state, &limit, &priority, &egress, &credVersion, &expires, &version, &created); err != nil {
+		if err := rows.Scan(&id, &provider, &label, &state, &limit, &priority, &egress, &credVersion, &expires, &version, &created, &policyName, &proxyName); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
 		out = append(out, map[string]any{
 			"id": id, "provider": provider, "label": label, "state": state,
 			"concurrency_limit": limit, "priority": priority, "egress_policy_id": egress,
+			"egress_policy_name": policyName, "proxy_name": proxyName,
 			"credential_version": credVersion, "expires_at": expires, "version": version, "created_at": created,
 		})
 	}
@@ -289,6 +386,8 @@ func (s *Server) createAccount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) patchAccount(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
+		Label            *string `json:"label"`
+		ProxyID          *string `json:"proxy_id"`
 		State            *string `json:"state"`
 		ConcurrencyLimit *int    `json:"concurrency_limit"`
 		Priority         *int    `json:"priority"`
@@ -329,6 +428,27 @@ func (s *Server) patchAccount(w http.ResponseWriter, r *http.Request, id string)
 			return
 		}
 	}
+	if req.Label != nil && strings.TrimSpace(*req.Label) == "" {
+		s.writeErr(w, 400, "标签不能为空")
+		return
+	}
+	if req.ConcurrencyLimit != nil && *req.ConcurrencyLimit < 1 {
+		s.writeErr(w, 400, "并发上限至少为 1")
+		return
+	}
+	if req.ProxyID != nil {
+		if !resourceUUID.MatchString(*req.ProxyID) || req.EgressPolicyID != nil {
+			s.writeErr(w, 400, "请选择有效代理，不能同时指定出口策略")
+			return
+		}
+		var policyID string
+		err := tx.QueryRow(r.Context(), `INSERT INTO egress_policies(name,primary_proxy_id,failure_mode) SELECT $2,id,'stop' FROM proxy_profiles WHERE id=$1 AND status='active' RETURNING id::text`, *req.ProxyID, "account-"+id+"-"+time.Now().Format("20060102150405.000000000")).Scan(&policyID)
+		if err != nil {
+			s.writeErr(w, 400, "代理不存在或已禁用")
+			return
+		}
+		req.EgressPolicyID = &policyID
+	}
 	var egress any
 	if req.EgressPolicyID != nil {
 		egress = *req.EgressPolicyID
@@ -338,10 +458,11 @@ func (s *Server) patchAccount(w http.ResponseWriter, r *http.Request, id string)
 			state = COALESCE(NULLIF($2,''), state),
 			concurrency_limit = COALESCE($3, concurrency_limit),
 			priority = COALESCE($4, priority),
-			egress_policy_id = COALESCE($5::uuid, egress_policy_id),
+			egress_policy_id = CASE WHEN $5::text IS NULL THEN egress_policy_id ELSE NULLIF($5::text,'')::uuid END,
+            label = COALESCE($7,label),
 			version = version + 1, updated_at = now()
 		WHERE id=$1 AND version=$6`,
-		id, deref(req.State), req.ConcurrencyLimit, req.Priority, egress, req.Version)
+		id, deref(req.State), req.ConcurrencyLimit, req.Priority, egress, req.Version, req.Label)
 	if err != nil || tag.RowsAffected() == 0 {
 		s.writeErr(w, 409, "version conflict or account not found")
 		return
