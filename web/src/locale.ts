@@ -73,6 +73,13 @@ export function quotaMoney(value: unknown, empty = "不限"): string {
   const amount = Number(value);
   return Number.isFinite(amount) ? `${amount.toFixed(2)} 美元` : `${String(value)} 美元`;
 }
+
+// 套餐的计费倍率和可编辑额度同属运营配置，统一使用两位小数。
+export function fixedDecimal(value: unknown, empty = "未设置"): string {
+  if (value === null || value === undefined || value === "") return empty;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount.toFixed(2) : String(value);
+}
 const enumColumns = new Set(["state", "status", "role", "kind", "type", "strategy", "failure_mode", "owner_type", "period", "mode", "entry_type", "origin", "category", "action", "source", "decision", "coverage", "cache_state", "target_type"]);
 export function cellText(name: string, value: unknown): string {
   if (enumColumns.has(name)) return label(value, name);

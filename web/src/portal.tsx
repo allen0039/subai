@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import { Badge, Modal } from "./components";
-import { dateTime, errorText, quotaMoney } from "./locale";
+import { dateTime, errorText, fixedDecimal, quotaMoney } from "./locale";
 
 const empty = (value: unknown, text = "未设置") => value === "" || value === null || value === undefined ? text : String(value);
 const Empty: React.FC<{text: string}> = ({text}) => <div className="empty-state">{text}</div>;
@@ -9,7 +9,7 @@ const Empty: React.FC<{text: string}> = ({text}) => <div className="empty-state"
 const SubscriptionCard: React.FC<{ sub: any }> = ({ sub }) => <div className="subscription-card">
   <div><span className="eyebrow">订阅版本 {sub.plan_version}</span><h3>{sub.plan_name}</h3></div><Badge value={sub.status} domain="subscription"/>
   {[['每日额度',sub.daily_limit_usd],['每周额度',sub.weekly_limit_usd],['每月额度',sub.monthly_limit_usd]].map(([title,value]) => <div className="quota-line" key={String(title)}><span>{title}</span><b>{quotaMoney(value)}</b></div>)}
-  <small>到期：{dateTime(sub.expires_at, "无到期限制")} · 计费倍率：× {sub.rate_multiplier || "1"} · 套餐共享并发：{sub.concurrency_limit} · 可创建密钥数：{Number(sub.max_keys) > 0 ? sub.max_keys : "不限"}</small>
+  <small>到期：{dateTime(sub.expires_at, "无到期限制")} · 计费倍率：× {fixedDecimal(sub.rate_multiplier, "1.00")} · 套餐共享并发：{sub.concurrency_limit} · 可创建密钥数：{Number(sub.max_keys) > 0 ? sub.max_keys : "不限"}</small>
 </div>;
 
 export const MyOverview: React.FC = () => {
@@ -47,31 +47,47 @@ export const SecurityPage: React.FC = () => {
 };
 
 export const AdminPlans: React.FC = () => {
-  const emptyForm = {name:"",description:"",daily_limit_usd:"",weekly_limit_usd:"",monthly_limit_usd:"",rate_multiplier:"1",concurrency_limit:"1",max_keys:"",default_validity_days:"30",allowed_models:"",pool_ids:[],model_pricing:[]};
+  const emptyForm = {name:"",description:"",daily_limit_usd:"",weekly_limit_usd:"",monthly_limit_usd:"",rate_multiplier:"1.00",concurrency_limit:"1",max_keys:"",default_validity_days:"30",allowed_models:[] as string[],restrict_models:false,pool_ids:[] as string[],model_pricing:[]};
   const [plans,setPlans] = useState<any[]>([]);
   const [pools,setPools] = useState<any[]>([]);
+  const [catalogModels,setCatalogModels] = useState<any[]>([]);
   const [error,setError] = useState("");
   const [show,setShow] = useState(false);
   const [editing,setEditing] = useState<any | null>(null);
   const [form,setForm] = useState<any>(emptyForm);
+  const [modelQuery,setModelQuery] = useState("");
+  const [catalogBusy,setCatalogBusy] = useState(false);
+
+  const decimalInput = (value: unknown, fallback = "") => {
+    if (value === null || value === undefined || value === "") return fallback;
+    return fixedDecimal(value, fallback);
+  };
+  const loadCatalog = useCallback(async () => {
+    const result = await api.get<any>("/api/admin/prices/active/models");
+    setCatalogModels((result.data ?? []).filter((item: any) => String(item.model ?? "").trim()));
+  }, []);
 
   const load = useCallback(async () => {
     try {
-      const [planResult,poolResult] = await Promise.all([api.get<any>("/api/admin/plans"),api.get<any>("/api/admin/account-pools")]);
+      const [planResult,poolResult,modelResult] = await Promise.all([api.get<any>("/api/admin/plans"),api.get<any>("/api/admin/account-pools"),api.get<any>("/api/admin/prices/active/models")]);
       setPlans(planResult.data ?? []);
       setPools(poolResult.data ?? []);
+      setCatalogModels((modelResult.data ?? []).filter((item: any) => String(item.model ?? "").trim()));
       setError("");
     } catch (e) { setError(errorText(e)); }
   }, []);
   useEffect(() => { load(); },[load]);
 
-  const payload = () => ({
-    ...form,
-    concurrency_limit:Number(form.concurrency_limit),
-    max_keys:form.max_keys === "" ? 0 : Number(form.max_keys),
-    default_validity_days:Number(form.default_validity_days),
-    allowed_models:String(form.allowed_models).split(",").map(value => value.trim()).filter(Boolean),
-  });
+  const payload = () => {
+    const {restrict_models, ...body} = form;
+    return {
+      ...body,
+      concurrency_limit:Number(form.concurrency_limit),
+      max_keys:form.max_keys === "" ? 0 : Number(form.max_keys),
+      default_validity_days:Number(form.default_validity_days),
+      allowed_models:restrict_models ? form.allowed_models : [],
+    };
+  };
   const save = async () => {
     try {
       if (editing) await api.post(`/api/admin/plans/${editing.id}/versions`,payload());
@@ -82,18 +98,31 @@ export const AdminPlans: React.FC = () => {
     } catch (e) { setError(errorText(e)); }
   };
   const publish = async (id:string) => { try { await api.post(`/api/admin/plans/${id}/publish`); await load(); } catch (e) { setError(errorText(e)); } };
-  const openCreate = () => { setEditing(null); setForm({...emptyForm,pool_ids:[],model_pricing:[]}); setShow(true); };
+  const openCreate = () => { setEditing(null); setModelQuery(""); setForm({...emptyForm,pool_ids:[],model_pricing:[]}); setShow(true); };
   const openEdit = (plan:any) => {
     setEditing(plan);
+    setModelQuery("");
     setForm({
       name:plan.name ?? "", description:plan.description ?? "",
-      daily_limit_usd:plan.daily_limit_usd ?? "", weekly_limit_usd:plan.weekly_limit_usd ?? "", monthly_limit_usd:plan.monthly_limit_usd ?? "",
-      rate_multiplier:plan.rate_multiplier || "1", concurrency_limit:String(plan.concurrency_limit || 1),
+      daily_limit_usd:decimalInput(plan.daily_limit_usd), weekly_limit_usd:decimalInput(plan.weekly_limit_usd), monthly_limit_usd:decimalInput(plan.monthly_limit_usd),
+      rate_multiplier:decimalInput(plan.rate_multiplier, "1.00"), concurrency_limit:String(plan.concurrency_limit || 1),
       max_keys:Number(plan.max_keys) > 0 ? String(plan.max_keys) : "", default_validity_days:String(plan.default_validity_days || 30),
-      allowed_models:(plan.allowed_models ?? []).join(", "), pool_ids:(plan.pools ?? []).map((pool:any) => pool.id),
+      allowed_models:plan.allowed_models ?? [], restrict_models:(plan.allowed_models ?? []).length > 0, pool_ids:(plan.pools ?? []).map((pool:any) => pool.id),
       model_pricing:plan.model_pricing ?? [],
     });
     setShow(true);
+  };
+  const selectedModels = new Set<string>(form.allowed_models);
+  const knownModels = new Set(catalogModels.map((item:any) => String(item.model)));
+  const modelChoices = [...catalogModels, ...form.allowed_models.filter((model:string) => !knownModels.has(model)).map((model:string) => ({model, unavailable:true}))]
+    .filter((item:any) => String(item.model).toLowerCase().includes(modelQuery.trim().toLowerCase()));
+  const selectAllVisible = () => setForm({...form,allowed_models:Array.from(new Set([...form.allowed_models,...modelChoices.map((item:any) => String(item.model))]))});
+  const toggleModel = (model:string, checked:boolean) => setForm({...form,allowed_models:checked ? Array.from(new Set([...form.allowed_models,model])) : form.allowed_models.filter((item:string) => item !== model)});
+  const syncCatalog = async () => {
+    setCatalogBusy(true);
+    try { await api.post("/api/admin/prices/sync"); await loadCatalog(); setError(""); }
+    catch (e) { setError(errorText(e)); }
+    finally { setCatalogBusy(false); }
   };
 
   return <div className="portal">
@@ -104,7 +133,7 @@ export const AdminPlans: React.FC = () => {
       <td><b>{plan.name}</b><br/><small className="muted">版本 {plan.plan_version} · {plan.description || "暂无说明"}</small></td>
       <td><Badge value={plan.status} domain="plan"/></td>
       <td>{quotaMoney(plan.daily_limit_usd)}／{quotaMoney(plan.weekly_limit_usd)}／{quotaMoney(plan.monthly_limit_usd)}</td>
-      <td>× {plan.rate_multiplier || "1"}</td><td>{plan.concurrency_limit}</td><td>{Number(plan.max_keys) > 0 ? plan.max_keys : "不限"}</td>
+      <td>× {fixedDecimal(plan.rate_multiplier, "1.00")}</td><td>{plan.concurrency_limit}</td><td>{Number(plan.max_keys) > 0 ? plan.max_keys : "不限"}</td>
       <td>{(plan.pools ?? []).map((pool:any) => pool.name).join("、") || "未配置"}</td>
       <td className="actions"><button className="btn small" onClick={() => openEdit(plan)}>编辑</button>{plan.status === "draft" && <button className="btn small primary" onClick={() => publish(plan.id)}>发布</button>}</td>
     </tr>)}</tbody></table>
@@ -112,13 +141,18 @@ export const AdminPlans: React.FC = () => {
       {editing && <div className="flash">保存后生成版本 {Number(editing.plan_version) + 1}；已有订阅继续使用原版本。</div>}
       <label className="field"><span className="field-label">套餐名称</span><input value={form.name} onChange={e => setForm({...form,name:e.target.value})} required/></label>
       <label className="field"><span className="field-label">说明</span><textarea value={form.description} onChange={e => setForm({...form,description:e.target.value})}/></label>
-      <div className="form-grid">{[["daily_limit_usd","每日额度（美元）"],["weekly_limit_usd","每周额度（美元）"],["monthly_limit_usd","每月额度（美元）"]].map(([key,title]) => <label className="field" key={key}><span className="field-label">{title}</span><input value={form[key]} placeholder="留空表示不限" onChange={e => setForm({...form,[key]:e.target.value})}/></label>)}</div>
+      <div className="form-grid">{[["daily_limit_usd","每日额度（美元）"],["weekly_limit_usd","每周额度（美元）"],["monthly_limit_usd","每月额度（美元）"]].map(([key,title]) => <label className="field" key={key}><span className="field-label">{title}</span><input type="number" min="0" step="0.01" value={form[key]} placeholder="留空表示不限" onChange={e => setForm({...form,[key]:e.target.value})}/></label>)}</div>
       <label className="field"><span className="field-label">计费倍率</span><input type="number" min="0" step="0.01" value={form.rate_multiplier} onChange={e => setForm({...form,rate_multiplier:e.target.value})}/><small className="muted">模型目录价格乘以此倍率后计入用户额度。</small></label>
       <div className="form-grid">
         <label className="field"><span className="field-label">套餐共享并发</span><input type="number" min="1" value={form.concurrency_limit} onChange={e => setForm({...form,concurrency_limit:e.target.value})}/><small className="muted">同一订阅下所有密钥合计可同时执行的请求数。</small></label>
         <label className="field"><span className="field-label">可创建接口密钥数</span><input type="number" min="1" value={form.max_keys} placeholder="留空表示不限" onChange={e => setForm({...form,max_keys:e.target.value})}/><small className="muted">默认不限；填写后限制每个订阅可创建的密钥总数。</small></label>
       </div>
-      <label className="field"><span className="field-label">允许模型（使用逗号分隔，留空表示全部）</span><input value={form.allowed_models} onChange={e => setForm({...form,allowed_models:e.target.value})}/></label>
+      <section className="model-selector" aria-label="套餐可用模型">
+        <div className="model-selector-head"><div><span className="field-label">可用模型</span><small className="muted">模型目录会在打开页面时自动读取；套餐保存的是勾选结果。</small></div><label className="model-toggle"><input type="checkbox" checked={form.restrict_models} onChange={e => setForm({...form,restrict_models:e.target.checked})}/><span>仅允许勾选的模型</span></label></div>
+        {form.restrict_models ? <><div className="model-toolbar"><input aria-label="筛选模型" placeholder="搜索模型名称" value={modelQuery} onChange={e => setModelQuery(e.target.value)}/><span className="muted small">已选 {form.allowed_models.length} 个</span><button type="button" className="btn small" onClick={selectAllVisible} disabled={!modelChoices.length}>全选当前结果</button><button type="button" className="btn small" onClick={() => setForm({...form,allowed_models:[]})} disabled={!form.allowed_models.length}>清空选择</button><button type="button" className="btn small" onClick={syncCatalog} disabled={catalogBusy}>{catalogBusy ? "正在同步目录" : "同步模型目录"}</button></div>
+          <div className="model-check-list">{modelChoices.length ? modelChoices.map((item:any) => { const model = String(item.model); return <label key={model} className={item.unavailable ? "model-missing" : ""}><input type="checkbox" checked={selectedModels.has(model)} onChange={e => toggleModel(model,e.target.checked)}/><span>{model}</span>{item.unavailable ? <small>原有配置，当前目录未找到</small> : <small>输入 {fixedDecimal(item.input_per_mtok, "—")}／输出 {fixedDecimal(item.output_per_mtok, "—")} 美元/百万词元</small>}</label>; }) : <div className="empty-state">暂无可选模型。请先同步并启用价格版本，再回到这里选择模型。</div>}</div>
+        </> : <div className="model-all-note">当前套餐允许模型目录中的全部模型；启用限制后再勾选需要开放的模型。</div>}
+      </section>
       <span className="field-label">绑定账号池</span><div className="check-list">{pools.map(pool => <label key={pool.id}><input type="checkbox" checked={form.pool_ids.includes(pool.id)} onChange={e => setForm({...form,pool_ids:e.target.checked ? [...form.pool_ids,pool.id] : form.pool_ids.filter((id:string) => id !== pool.id)})}/>{pool.name}</label>)}</div>
     </Modal>}
   </div>;
