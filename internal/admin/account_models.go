@@ -64,9 +64,10 @@ func (s *Server) syncServiceGroupModels(w http.ResponseWriter, r *http.Request, 
 		s.writeErr(w, 400, "当前仅 Codex 服务分组支持自动同步；其他平台请在上游账号中配置模型能力")
 		return
 	}
-	rows, err := s.DB.Pool.Query(r.Context(), `SELECT DISTINCT a.id::text FROM accounts a JOIN account_group_members gm ON gm.account_id=a.id WHERE gm.group_id=$1 AND a.provider='codex' AND a.state='active' ORDER BY a.id`, groupID)
+	rows, err := s.DB.Pool.Query(r.Context(), `SELECT DISTINCT a.id::text FROM accounts a JOIN account_group_members gm ON gm.account_id=a.id WHERE gm.group_id=$1 AND a.provider='codex' AND a.state='active' ORDER BY a.id::text`, groupID)
 	if err != nil {
-		s.writeErr(w, 500, err.Error())
+		log.Printf("service group model sync could not load accounts: group=%s error=%v", groupID, err)
+		s.writeErr(w, 500, "读取服务分组账号失败")
 		return
 	}
 	defer rows.Close()
@@ -202,9 +203,10 @@ func (s *Server) syncAccountModels(w http.ResponseWriter, r *http.Request) {
 		SELECT DISTINCT a.id::text FROM accounts a
 		JOIN account_group_members gm ON gm.account_id=a.id
 		WHERE a.provider='codex' AND a.state='active' AND gm.group_id = ANY($1::uuid[])
-		ORDER BY a.id`, pools)
+		ORDER BY a.id::text`, pools)
 	if err != nil {
-		s.writeErr(w, 500, err.Error())
+		log.Printf("account model sync could not load accounts: error=%v", err)
+		s.writeErr(w, 500, "读取账号池中的上游账号失败")
 		return
 	}
 	defer rows.Close()
