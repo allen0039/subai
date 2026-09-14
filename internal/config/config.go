@@ -44,19 +44,30 @@ type Config struct {
 	UpstreamBaseURL string        // Codex upstream, mockable in tests (D-003)
 	UpstreamTimeout time.Duration // per-dispatch budget, isolated from finalization (review R2-05)
 	OutputBound     int           // default injected max_output_tokens (D-001)
+	BillingMode     string        // metered (Sub2API-style) or strict_reservation
+	PriceSourceURL  string        // LiteLLM/Sub2API-compatible model price catalog
+	PriceHashURL    string        // optional SHA-256 sidecar
+	PriceSyncPeriod time.Duration // background catalog check interval
 
 	SessionSecret string
 	SingletonKey  int // advisory lock key for single-active enforcement (D-007)
 
 	DevBootstrapAdmin string // optional "user:password" to bootstrap first admin; empty in prod
 
-	// P2-04: AdminOrigin, PriceSyncInterval, PriceSourceURL, LogRetention removed.
-	// These were parsed but never wired to runtime behavior. Price sync explicitly
-	// returns not_verified (safe). Log retention and admin CORS should be
-	// implemented with proper scheduling and security review before being exposed.
+	// Log retention and admin CORS remain internal defaults until their runtime
+	// policies are explicitly exposed.
 }
 
 func Load() (*Config, error) {
+	const defaultPriceSource = "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json"
+	const defaultPriceHash = "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256"
+	priceSource := env("SUBAI_PRICE_SOURCE_URL", defaultPriceSource)
+	priceHashDefault := defaultPriceHash
+	if strings.TrimSpace(os.Getenv("SUBAI_PRICE_SOURCE_URL")) != "" && strings.TrimSpace(os.Getenv("SUBAI_PRICE_HASH_URL")) == "" {
+		// A sidecar belongs to one exact source. Do not accidentally verify a
+		// custom catalog against the default repository's digest.
+		priceHashDefault = ""
+	}
 	c := &Config{
 		ListenAddr:            env("SUBAI_LISTEN", ":8080"),
 		DatabaseURL:           env("SUBAI_DATABASE_URL", "postgres://subai:subai@localhost:5432/subai?sslmode=disable"),
@@ -86,6 +97,10 @@ func Load() (*Config, error) {
 		UpstreamBaseURL:       env("SUBAI_UPSTREAM_BASE_URL", "https://chatgpt.com/backend-api/codex"),
 		UpstreamTimeout:       time.Duration(envInt("SUBAI_UPSTREAM_TIMEOUT_S", 600)) * time.Second,
 		OutputBound:           envInt("SUBAI_OUTPUT_BOUND", 4096),
+		BillingMode:           env("SUBAI_BILLING_MODE", "metered"),
+		PriceSourceURL:        priceSource,
+		PriceHashURL:          env("SUBAI_PRICE_HASH_URL", priceHashDefault),
+		PriceSyncPeriod:       time.Duration(envInt("SUBAI_PRICE_SYNC_INTERVAL_MIN", 60)) * time.Minute,
 		SessionSecret:         env("SUBAI_SESSION_SECRET", ""),
 		SingletonKey:          envInt("SUBAI_SINGLETON_KEY", 0x53554241), // "SUBA"
 		DevBootstrapAdmin:     env("SUBAI_DEV_BOOTSTRAP_ADMIN", ""),
@@ -125,6 +140,12 @@ func (c *Config) Validate() error {
 	}
 	if c.AuditCacheTTL <= 0 {
 		return fmt.Errorf("cache TTL must be positive")
+	}
+	if c.BillingMode != "metered" && c.BillingMode != "strict_reservation" {
+		return fmt.Errorf("SUBAI_BILLING_MODE must be metered or strict_reservation")
+	}
+	if c.PriceSyncPeriod <= 0 {
+		return fmt.Errorf("price sync interval must be positive")
 	}
 	return nil
 }

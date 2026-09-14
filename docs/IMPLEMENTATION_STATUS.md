@@ -4,7 +4,7 @@
 `passed`（有可复现命令与结果）、`failed`、`not_run`（未执行）、`blocked`（缺少环境，如真实凭证）。
 本文件随开发更新；"模拟"指使用 tests/integration 中的合成上游/合成审核服务，真实联调一律标记为 not_run 或 blocked，不计入通过率。
 
-最后更新：2026-09-12（第一版实施完成；第一轮审查 8×P1+6×P2 与第二轮审查 6×P1+4×P2 全部修复，见 docs/REVIEW_FIXES_2026-09-12.md 与 docs/REVIEW_FIXES_ROUND2_2026-09-12.md）。
+最后更新：2026-09-14（增加 Sub2API 风格请求后计量、远程价格目录同步与套餐倍率；既有审查修复记录仍见对应 REVIEW 文档）。
 
 ## 复现命令与结果（2026-09-12 实测）
 
@@ -27,7 +27,7 @@ docker build -f deploy/Dockerfile . → PASS（镜像含 migrations 与 web/dist
 | P0-01 | 协议验证 | blocked | 无真实 Codex 客户端与 Pro 账号凭证；docs/COMPATIBILITY.md 矩阵就绪，真实项均 pending |
 | P0-02 | 费用上界 | blocked | 设计与实现见 docs/BILLING_BOUNDS.md（注入 max_output_tokens + 保守输入估算）；真实有效性待凭证 |
 | P0-03 | 审核容量 | blocked | docs/AUDIT_CAPACITY.md 含设计参数与模拟验证；真实限额/延迟待 Platform Key |
-| P0-04 | 官方价格源 | blocked | sync 接口明确返回 not_verified 不激活；docs/PRICE_SOURCE.md |
+| P0-04 | 价格目录 | passed（社区目录）/ blocked（官方源） | Sub2API/LiteLLM 兼容目录已支持启动、定时和手工同步；官方价格页仍无稳定机器接口；docs/PRICE_SOURCE.md |
 | P1-01 | 基础服务 | passed | 集成测试 happy path/坏 Key/无路由/错误映射 + 端到端实测（见上） |
 | P1-02 | OAuth | passed（模拟）/ blocked（真实） | PKCE/state 单次消费/刷新互斥以合成授权服务器验证（TestOAuthPKCEFlow）；真实端点待配置 |
 | P2-01 | 默认规则 | passed | 11 条规则 + 每条 ≥2 正反例（internal/audit rules_test）；凭证命中零外发、日志遮蔽（TestSecretBlockedZeroUpstreamZeroModeration） |
@@ -50,6 +50,5 @@ docker build -f deploy/Dockerfile . → PASS（镜像含 migrations 与 web/dist
 
 - Codex 上游真实协议（端点、SSE schema、usage 字段）——P0-01。
 - 官方 Moderation 真实分类与图片支持——P0-03。
-- 官方价格页机器可读性——P0-04。
+- OpenAI 官方价格页机器可读性仍未验证；当前 P0-04 使用可校验 hash 的社区目录。
 - max_output_tokens 在真实上游的约束有效性——P0-02。
-

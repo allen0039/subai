@@ -23,6 +23,7 @@ type planInput struct {
 	DailyLimitUSD       *string  `json:"daily_limit_usd"`
 	WeeklyLimitUSD      *string  `json:"weekly_limit_usd"`
 	MonthlyLimitUSD     *string  `json:"monthly_limit_usd"`
+	RateMultiplier      *string  `json:"rate_multiplier"`
 	ConcurrencyLimit    int      `json:"concurrency_limit"`
 	MaxKeys             int      `json:"max_keys"`
 	AllowedModels       []string `json:"allowed_models"`
@@ -67,15 +68,26 @@ func normalizePlanInput(in *planInput) error {
 			return err
 		}
 	}
+	if in.RateMultiplier == nil || strings.TrimSpace(*in.RateMultiplier) == "" {
+		value := "1"
+		in.RateMultiplier = &value
+	}
+	multiplier, err := decimal.NewFromString(strings.TrimSpace(*in.RateMultiplier))
+	if err != nil || multiplier.IsNegative() {
+		return fmt.Errorf("rate_multiplier must be a non-negative decimal")
+	}
+	in.RateMultiplier = ptrString(multiplier.StringFixed(12))
 	return nil
 }
+
+func ptrString(value string) *string { return &value }
 
 func (s *Server) listPlans(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.DB.Pool.Query(r.Context(), `
 		SELECT p.id::text,p.name,p.description,p.status,COALESCE(p.current_version_id::text,''),p.version,p.created_at::text,
 		       COALESCE(v.version_number,0), COALESCE(v.daily_limit_usd::text,''), COALESCE(v.weekly_limit_usd::text,''), COALESCE(v.monthly_limit_usd::text,''),
 		       COALESCE(v.concurrency_limit,0), COALESCE(v.max_keys,0), v.allowed_models,
-		       COALESCE(v.default_validity_days,0), COALESCE(v.timezone,'')
+		       COALESCE(v.default_validity_days,0), COALESCE(v.timezone,''), COALESCE(v.rate_multiplier,1)::text
 		FROM plans p LEFT JOIN plan_versions v ON v.id=p.current_version_id
 		ORDER BY p.created_at DESC`)
 	if err != nil {
@@ -85,10 +97,10 @@ func (s *Server) listPlans(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, name, desc, status, versionID, created, daily, weekly, monthly, tz string
+		var id, name, desc, status, versionID, created, daily, weekly, monthly, tz, rateMultiplier string
 		var planRowVersion, planVersion, concurrency, maxKeys, validity int
 		var models []string
-		if err := rows.Scan(&id, &name, &desc, &status, &versionID, &planRowVersion, &created, &planVersion, &daily, &weekly, &monthly, &concurrency, &maxKeys, &models, &validity, &tz); err != nil {
+		if err := rows.Scan(&id, &name, &desc, &status, &versionID, &planRowVersion, &created, &planVersion, &daily, &weekly, &monthly, &concurrency, &maxKeys, &models, &validity, &tz, &rateMultiplier); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
@@ -97,7 +109,7 @@ func (s *Server) listPlans(w http.ResponseWriter, r *http.Request) {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
-		out = append(out, map[string]any{"id": id, "name": name, "description": desc, "status": status, "current_version_id": versionID, "version": planRowVersion, "plan_version": planVersion, "created_at": created, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "concurrency_limit": concurrency, "max_keys": maxKeys, "allowed_models": models, "default_validity_days": validity, "timezone": tz, "pools": pools})
+		out = append(out, map[string]any{"id": id, "name": name, "description": desc, "status": status, "current_version_id": versionID, "version": planRowVersion, "plan_version": planVersion, "created_at": created, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "rate_multiplier": rateMultiplier, "concurrency_limit": concurrency, "max_keys": maxKeys, "allowed_models": models, "default_validity_days": validity, "timezone": tz, "pools": pools})
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})
 }
@@ -160,9 +172,9 @@ func (s *Server) createPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := tx.QueryRow(r.Context(), `
-		INSERT INTO plan_versions(plan_id,version_number,daily_limit_usd,weekly_limit_usd,monthly_limit_usd,concurrency_limit,max_keys,allowed_models,default_validity_days,timezone,created_by)
-		VALUES($1,1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id::text`,
-		planID, daily, weekly, monthly, in.ConcurrencyLimit, in.MaxKeys, in.AllowedModels, in.DefaultValidityDays, in.Timezone, actorFrom(r)).Scan(&versionID); err != nil {
+		INSERT INTO plan_versions(plan_id,version_number,daily_limit_usd,weekly_limit_usd,monthly_limit_usd,rate_multiplier,concurrency_limit,max_keys,allowed_models,default_validity_days,timezone,created_by)
+		VALUES($1,1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id::text`,
+		planID, daily, weekly, monthly, *in.RateMultiplier, in.ConcurrencyLimit, in.MaxKeys, in.AllowedModels, in.DefaultValidityDays, in.Timezone, actorFrom(r)).Scan(&versionID); err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
 	}
@@ -252,7 +264,7 @@ func (s *Server) createPlanVersion(w http.ResponseWriter, r *http.Request, planI
 		return
 	}
 	var versionID string
-	if err := tx.QueryRow(r.Context(), `INSERT INTO plan_versions(plan_id,version_number,daily_limit_usd,weekly_limit_usd,monthly_limit_usd,concurrency_limit,max_keys,allowed_models,default_validity_days,timezone,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id::text`, planID, n, daily, weekly, monthly, in.ConcurrencyLimit, in.MaxKeys, in.AllowedModels, in.DefaultValidityDays, in.Timezone, actorFrom(r)).Scan(&versionID); err != nil {
+	if err := tx.QueryRow(r.Context(), `INSERT INTO plan_versions(plan_id,version_number,daily_limit_usd,weekly_limit_usd,monthly_limit_usd,rate_multiplier,concurrency_limit,max_keys,allowed_models,default_validity_days,timezone,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id::text`, planID, n, daily, weekly, monthly, *in.RateMultiplier, in.ConcurrencyLimit, in.MaxKeys, in.AllowedModels, in.DefaultValidityDays, in.Timezone, actorFrom(r)).Scan(&versionID); err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
 	}
@@ -408,7 +420,7 @@ func (s *Server) listSubscriptions(w http.ResponseWriter, r *http.Request, membe
 		SELECT us.id::text,us.member_id::text,m.name,p.id::text,p.name,pv.id::text,pv.version_number,us.status,us.starts_at::text,us.expires_at::text,
 		COALESCE(us.concurrency_override,pv.concurrency_limit),COALESCE(us.max_keys_override,pv.max_keys),
 		COALESCE(COALESCE(us.daily_limit_override,pv.daily_limit_usd)::text,''),COALESCE(COALESCE(us.weekly_limit_override,pv.weekly_limit_usd)::text,''),COALESCE(COALESCE(us.monthly_limit_override,pv.monthly_limit_usd)::text,''),
-		COALESCE(us.allowed_models_override,pv.allowed_models),us.version,us.notes
+		COALESCE(us.allowed_models_override,pv.allowed_models),pv.rate_multiplier::text,us.version,us.notes
 		FROM user_subscriptions us JOIN members m ON m.id=us.member_id JOIN plan_versions pv ON pv.id=us.plan_version_id JOIN plans p ON p.id=pv.plan_id `+where+` ORDER BY us.expires_at DESC`, args...)
 	if err != nil {
 		s.writeErr(w, 500, err.Error())
@@ -417,14 +429,14 @@ func (s *Server) listSubscriptions(w http.ResponseWriter, r *http.Request, membe
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, mid, memberName, pid, pname, vid, status, starts, expires, daily, weekly, monthly, notes string
+		var id, mid, memberName, pid, pname, vid, status, starts, expires, daily, weekly, monthly, rateMultiplier, notes string
 		var pv, conc, max, version int
 		var models []string
-		if err := rows.Scan(&id, &mid, &memberName, &pid, &pname, &vid, &pv, &status, &starts, &expires, &conc, &max, &daily, &weekly, &monthly, &models, &version, &notes); err != nil {
+		if err := rows.Scan(&id, &mid, &memberName, &pid, &pname, &vid, &pv, &status, &starts, &expires, &conc, &max, &daily, &weekly, &monthly, &models, &rateMultiplier, &version, &notes); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
-		out = append(out, map[string]any{"id": id, "member_id": mid, "member_name": memberName, "plan_id": pid, "plan_name": pname, "plan_version_id": vid, "plan_version": pv, "status": availability(status, starts, expires), "starts_at": starts, "expires_at": expires, "concurrency_limit": conc, "max_keys": max, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "allowed_models": models, "version": version, "notes": notes})
+		out = append(out, map[string]any{"id": id, "member_id": mid, "member_name": memberName, "plan_id": pid, "plan_name": pname, "plan_version_id": vid, "plan_version": pv, "status": availability(status, starts, expires), "starts_at": starts, "expires_at": expires, "concurrency_limit": conc, "max_keys": max, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "rate_multiplier": rateMultiplier, "allowed_models": models, "version": version, "notes": notes})
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})
 }

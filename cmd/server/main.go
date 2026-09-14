@@ -21,6 +21,7 @@ import (
 	"subai/internal/admin"
 	"subai/internal/audit"
 	"subai/internal/auth"
+	"subai/internal/billing"
 	"subai/internal/config"
 	"subai/internal/egress"
 	"subai/internal/gateway"
@@ -105,6 +106,17 @@ func main() {
 		return
 	}
 
+	priceHTTP := &http.Client{Timeout: 30 * time.Second}
+	syncPrices := func(syncCtx context.Context) (billing.PriceSyncResult, error) {
+		return billing.SyncPriceCatalog(syncCtx, db.Pool, priceHTTP, cfg.PriceSourceURL, cfg.PriceHashURL)
+	}
+	if result, syncErr := syncPrices(ctx); syncErr != nil {
+		log.Printf("price catalog startup sync failed; retaining last active version: %v", syncErr)
+	} else {
+		log.Printf("price catalog ready: models=%d activated=%v unchanged=%v", result.Models, result.Activated, result.Unchanged)
+	}
+	go startPriceSyncWorker(ctx, cfg.PriceSyncPeriod, syncPrices)
+
 	// ── Startup reconciliation (§19 + review P1-4): funds & accounts first ──
 	st := gateway.NewStateTracker(db.Pool)
 	summary, err := st.OnStartupRecovery(ctx)
@@ -188,8 +200,9 @@ func main() {
 
 	adminSrv := &admin.Server{
 		DB: db, Auth: authSvc, OAuth: oauth, Quota: accounts.NewQuotaClient(), Egress: egressResolver, Rules: engine,
-		Reloader: reload,
-		Ready:    ready, // same gate as the data plane (review P1-2)
+		Reloader:  reload,
+		Ready:     ready, // same gate as the data plane (review P1-2)
+		PriceSync: syncPrices,
 	}
 
 	handler := server.Build(server.Deps{DB: db, Gateway: gw, Admin: adminSrv})
@@ -216,6 +229,28 @@ func main() {
 	}()
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
+	}
+}
+
+func startPriceSyncWorker(ctx context.Context, interval time.Duration, syncPrices func(context.Context) (billing.PriceSyncResult, error)) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+			result, err := syncPrices(syncCtx)
+			cancel()
+			if err != nil {
+				log.Printf("price catalog background sync failed: %v", err)
+				continue
+			}
+			if result.Activated {
+				log.Printf("price catalog activated: version=%s models=%d", result.VersionID, result.Models)
+			}
+		}
 	}
 }
 

@@ -1,17 +1,17 @@
 # SubAI 独立网关
 
-个人/受控成员 AI 网关：多 Codex 账号池、独立 API Key、内部美元预算、双层并发、每账号出口隔离、前置审核（本地规则 + 官方 Moderation）。规格见 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) v0.2。
+个人/受控成员 AI 网关：多 Codex 账号池、订阅套餐与独立 API Key、Sub2API 风格真实 usage 计费、双层并发、每账号出口隔离、前置审核（本地规则 + 官方 Moderation）。规格见 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) v0.2。
 
-**当前状态**：第一版实现完成（P1–P5 全部、P6 部署框架），真实联调项（P0-01..04）因缺少真实凭证标记 blocked。开始前必读 [docs/REVIEW_HANDOFF.md](docs/REVIEW_HANDOFF.md) 与 [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)。
+**当前状态**：第一版实现完成（P1–P5 全部、P6 部署框架），模型价格目录已接入自动同步；真实 Codex 协议、费用字段与 Moderation 联调仍需生产凭证验证。开始前必读 [docs/REVIEW_HANDOFF.md](docs/REVIEW_HANDOFF.md) 与 [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)。
 
 **发布部署**：push 到 `main` 自动构建镜像并发布到 Docker Hub，Oracle3 拉镜像更新。发布流程见 [docs/RELEASE.md](docs/RELEASE.md)，日常发布一条命令：`make deploy`。
 
 ## 架构
 
 ```
-Codex/Hermes → 鉴权/限流/预算检查 → 内容提取 → 本地规则 → 审核缓存
-  → 公平队列 → 官方 Moderation → 账号选择 → 原子预算预留 + 并发槽
-  → 出口策略（代理/直连，故障默认停用）→ 上游 SSE → 幂等结算
+Codex/Hermes → API Key/套餐鉴权 → 额度准入 → 内容提取 → 本地规则 → 审核缓存
+  → 公平队列 → 官方 Moderation → 套餐绑定账号池选路 + 并发槽
+  → 出口策略（代理/直连，故障默认停用）→ 上游 SSE → 真实 usage 幂等计费
 ```
 
 单体 Go 服务 + PostgreSQL；管理界面 React + TS + Vite；Docker Compose 单实例部署（数据库单活锁，第二实例拒绝启动）。
@@ -47,7 +47,7 @@ cd deploy && cp .env.example .env && docker compose up -d --build
 
 - [docs/API.md](docs/API.md) — 数据面与管理面端点、错误映射
 - [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — 兼容矩阵（verified/mock_only/unsupported/pending）
-- [docs/BILLING_BOUNDS.md](docs/BILLING_BOUNDS.md) — 严格预算与费用上界
+- [docs/BILLING_BOUNDS.md](docs/BILLING_BOUNDS.md) — metered/strict 计费模式、倍率与失败语义
 - [docs/AUDIT_CAPACITY.md](docs/AUDIT_CAPACITY.md) — 审核容量与队列参数
 - [docs/PRICE_SOURCE.md](docs/PRICE_SOURCE.md) — 价格同步现状
 - [docs/DECISIONS.md](docs/DECISIONS.md) — 设计决策（D-001..D-010）

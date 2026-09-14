@@ -241,14 +241,22 @@ func (s *Server) listPriceVersions(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, 200, map[string]any{"data": out})
 }
 
-// syncPrices attempts an official-source sync (P0-04). Until the parser is
-// verified against the real page, it records the attempt and never activates
-// anything unverified (§23: 不伪造同步功能).
 func (s *Server) syncPrices(w http.ResponseWriter, r *http.Request) {
-	result := map[string]any{"activated": false, "status": "not_verified"}
-	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "prices.sync", "price_version", "",
-		map[string]any{"outcome": "parser_unverified"}, "")
-	s.writeJSON(w, 200, result)
+	if s.PriceSync == nil {
+		s.writeErr(w, http.StatusServiceUnavailable, "price sync is not configured")
+		return
+	}
+	result, err := s.PriceSync(r.Context())
+	if err != nil {
+		s.DB.LogAdminEvent(r.Context(), actorFrom(r), "prices.sync", "price_version", "",
+			map[string]any{"outcome": "failed", "error": err.Error()}, "")
+		s.writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.notifyMutation()
+	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "prices.sync", "price_version", result.VersionID,
+		map[string]any{"outcome": "success", "models": result.Models, "activated": result.Activated, "unchanged": result.Unchanged}, "")
+	s.writeJSON(w, http.StatusOK, result)
 }
 
 // overridePrice creates a manual price version and activates it (§17.2).
@@ -279,10 +287,25 @@ func (s *Server) overridePrice(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, 500, err.Error())
 		return
 	}
+	if _, err := tx.Exec(r.Context(), `
+		INSERT INTO model_prices(price_version_id,model,input_per_mtok,cached_input_per_mtok,output_per_mtok,fixed_fees,tiers,is_manual_override)
+		SELECT $1,m.model,m.input_per_mtok,m.cached_input_per_mtok,m.output_per_mtok,m.fixed_fees,m.tiers,m.is_manual_override
+		FROM model_prices m JOIN price_versions v ON v.id=m.price_version_id
+		WHERE v.status='active'`, versionID); err != nil {
+		s.writeErr(w, 500, err.Error())
+		return
+	}
 	for _, m := range req.Models {
 		if _, err := tx.Exec(r.Context(), `
-			INSERT INTO model_prices(price_version_id, model, input_per_mtok, cached_input_per_mtok, output_per_mtok)
-			VALUES($1,$2,$3,$4,$5)`, versionID, m.Model, m.Input, m.CachedInput, m.Output); err != nil {
+			INSERT INTO model_prices(price_version_id, model, input_per_mtok, cached_input_per_mtok, output_per_mtok, is_manual_override)
+			VALUES($1,$2,$3,$4,$5,true)
+			ON CONFLICT(price_version_id,model) DO UPDATE SET
+				input_per_mtok=EXCLUDED.input_per_mtok,
+				cached_input_per_mtok=EXCLUDED.cached_input_per_mtok,
+				output_per_mtok=EXCLUDED.output_per_mtok,
+				fixed_fees='{}'::jsonb,
+				tiers='[]'::jsonb,
+				is_manual_override=true`, versionID, m.Model, m.Input, m.CachedInput, m.Output); err != nil {
 			s.writeErr(w, 400, "invalid price for "+m.Model+": "+err.Error())
 			return
 		}

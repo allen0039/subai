@@ -180,6 +180,36 @@ func TestModelPriceCost(t *testing.T) {
 	}
 }
 
+func TestModelPriceAppliesPlanRateMultiplier(t *testing.T) {
+	price := (&ModelPrice{
+		Model:              "test-model",
+		InputPerMTok:       decimal.NewFromInt(2),
+		CachedInputPerMTok: decimal.NewFromFloat(.2),
+		OutputPerMTok:      decimal.NewFromInt(10),
+	}).WithRateMultiplier(decimal.RequireFromString("1.25"))
+	usage := Usage{InputTokens: 100, CachedTokens: 50, OutputTokens: 20}
+	if got := price.BaseCost(usage); !got.Equal(decimal.RequireFromString("0.00041")) {
+		t.Fatalf("BaseCost() = %s", got)
+	}
+	if got := price.Cost(usage); !got.Equal(decimal.RequireFromString("0.0005125")) {
+		t.Fatalf("Cost() = %s", got)
+	}
+}
+
+func TestModelPriceAllowsZeroRateMultiplier(t *testing.T) {
+	price := (&ModelPrice{
+		InputPerMTok:  decimal.RequireFromString("2"),
+		OutputPerMTok: decimal.RequireFromString("10"),
+	}).WithRateMultiplier(decimal.Zero)
+
+	if got := price.Cost(Usage{InputTokens: 1_000, OutputTokens: 100}); !got.IsZero() {
+		t.Fatalf("free plan cost = %s, want 0", got)
+	}
+	if got := price.BaseCost(Usage{InputTokens: 1_000, OutputTokens: 100}); !got.Equal(decimal.RequireFromString("0.003")) {
+		t.Fatalf("base cost = %s, want 0.003", got)
+	}
+}
+
 func TestFixedFeeTotalRejectsUnknownDimensions(t *testing.T) {
 	_, err := fixedFeeTotal(map[string]any{"unmapped_fee": "1"})
 	if !errors.Is(err, ErrUnsupportedFee) {

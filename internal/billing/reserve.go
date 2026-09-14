@@ -29,6 +29,17 @@ type Reservation struct {
 // and the reserved counters are written in the same transaction. Any failure
 // rolls back every scope — partial holds are impossible.
 func Reserve(ctx context.Context, pool Pool, memberID, keyID, accountID, groupID, requestID string, candidate decimal.Decimal, now time.Time) ([]Reservation, error) {
+	return reserve(ctx, pool, memberID, keyID, accountID, groupID, requestID, candidate, now, "strict_reservation")
+}
+
+// AdmitMetered performs Sub2API-style preflight admission. It snapshots every
+// applicable budget period but holds no estimated money; the actual charge is
+// applied after the upstream reports usage.
+func AdmitMetered(ctx context.Context, pool Pool, memberID, keyID, accountID, groupID, requestID string, now time.Time) ([]Reservation, error) {
+	return reserve(ctx, pool, memberID, keyID, accountID, groupID, requestID, decimal.Zero, now, "metered")
+}
+
+func reserve(ctx context.Context, pool Pool, memberID, keyID, accountID, groupID, requestID string, candidate decimal.Decimal, now time.Time, mode string) ([]Reservation, error) {
 	if candidate.IsNegative() {
 		return nil, errors.New("negative reservation")
 	}
@@ -43,7 +54,15 @@ func Reserve(ctx context.Context, pool Pool, memberID, keyID, accountID, groupID
 		return nil, err
 	}
 	if len(scopes) == 0 {
-		// §18.2: no budget configured means production calls are not allowed.
+		if mode == "metered" {
+			// Subscription limits are optional in metered mode. With no policy,
+			// usage is still recorded in the ledger but no period is constrained.
+			if err := tx.Commit(ctx); err != nil {
+				return nil, err
+			}
+			return []Reservation{}, nil
+		}
+		// Strict reservation mode requires a configured upper bound.
 		return nil, fmt.Errorf("%w: no budget policy covers this request", ErrBudgetExceeded)
 	}
 	sort.Slice(scopes, func(i, j int) bool { return scopes[i].PolicyID < scopes[j].PolicyID })
@@ -62,14 +81,18 @@ func Reserve(ctx context.Context, pool Pool, memberID, keyID, accountID, groupID
 		if err != nil {
 			return nil, err
 		}
-		if spent.Add(reserved).Add(candidate).GreaterThan(limit) {
+		exceeded := spent.Add(reserved).Add(candidate).GreaterThan(limit)
+		if mode == "metered" {
+			exceeded = !spent.LessThan(limit)
+		}
+		if exceeded {
 			return nil, fmt.Errorf("%w: policy %s (spent %s + reserved %s + candidate %s > limit %s)",
 				ErrBudgetExceeded, s.PolicyID, spent, reserved, candidate, limit)
 		}
 		var resID string
 		err = tx.QueryRow(ctx, `
-			INSERT INTO reservations(request_id, budget_period_id, amount, state)
-			VALUES($1,$2,$3,'held') RETURNING id`, requestID, periodID, candidate).Scan(&resID)
+			INSERT INTO reservations(request_id, budget_period_id, amount, state, billing_mode)
+			VALUES($1,$2,$3,'held',$4) RETURNING id`, requestID, periodID, candidate, mode).Scan(&resID)
 		if err != nil {
 			return nil, err
 		}
@@ -165,6 +188,7 @@ func Settle(ctx context.Context, pool Pool, requestID string, attemptID int64, k
 		if err := accounts.LockTx(ctx, tx, accountID); err != nil {
 			return err
 		}
+		baseCost := price.BaseCost(usage)
 		cost := price.Cost(usage)
 		result.Cost = cost
 		// Idempotent insert: the unique (request_id, attempt_id, entry_type)
@@ -172,11 +196,11 @@ func Settle(ctx context.Context, pool Pool, requestID string, attemptID int64, k
 		// settlements converge on exactly one charge row (§18.3).
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO usage_ledger(request_id, attempt_id, api_key_id, account_id, user_subscription_id,
-				input_tokens, cached_input_tokens, output_tokens, cost, price_version_id, entry_type, details)
-			VALUES($1,$2,$3,$4,(SELECT user_subscription_id FROM api_keys WHERE id=$3),$5,$6,$7,$8,$9,'charge',$10)
+				input_tokens, cached_input_tokens, output_tokens, base_cost, rate_multiplier, cost, price_version_id, entry_type, details)
+			VALUES($1,$2,$3,$4,(SELECT user_subscription_id FROM api_keys WHERE id=$3),$5,$6,$7,$8,$9,$10,$11,'charge',$12)
 			ON CONFLICT (request_id, attempt_id, entry_type) DO NOTHING`,
 			requestID, attemptID, keyID, nullIfEmpty(accountID),
-			usage.InputTokens, usage.CachedTokens, usage.OutputTokens, cost, nullIfEmpty(priceVersionID),
+			usage.InputTokens, usage.CachedTokens, usage.OutputTokens, baseCost, price.EffectiveRateMultiplier(), cost, nullIfEmpty(priceVersionID),
 			jsonRaw(`{"settled_at_flow":"normal"}`))
 		if err != nil {
 			return err
@@ -187,19 +211,19 @@ func Settle(ctx context.Context, pool Pool, requestID string, attemptID int64, k
 		}
 
 		rows, err := tx.Query(ctx, `
-			SELECT r.id, r.budget_period_id, r.amount, r.state FROM reservations r
+			SELECT r.id, r.budget_period_id, r.amount, r.state, r.billing_mode FROM reservations r
 			WHERE r.request_id=$1 AND r.state IN ('held','unknown') FOR UPDATE`, requestID)
 		if err != nil {
 			return err
 		}
 		type rs struct {
-			id, period, state string
-			amount            decimal.Decimal
+			id, period, state, mode string
+			amount                  decimal.Decimal
 		}
 		var rsList []rs
 		for rows.Next() {
 			var r rs
-			if err := rows.Scan(&r.id, &r.period, &r.amount, &r.state); err != nil {
+			if err := rows.Scan(&r.id, &r.period, &r.amount, &r.state, &r.mode); err != nil {
 				rows.Close()
 				return err
 			}
@@ -220,7 +244,7 @@ func Settle(ctx context.Context, pool Pool, requestID string, attemptID int64, k
 				return err
 			}
 			result.ScopesApplied++
-			if cost.GreaterThan(r.amount) {
+			if r.mode != "metered" && cost.GreaterThan(r.amount) {
 				result.OverReserve = true
 			}
 		}

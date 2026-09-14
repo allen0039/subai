@@ -20,19 +20,21 @@ import (
 	"subai/internal/accounts"
 	"subai/internal/audit"
 	"subai/internal/auth"
+	"subai/internal/billing"
 	"subai/internal/egress"
 	"subai/internal/storage"
 )
 
 type Server struct {
-	DB       *storage.DB
-	Auth     *auth.Service
-	OAuth    *accounts.Manager
-	Quota    *accounts.QuotaClient
-	Egress   *egress.Resolver
-	Rules    *audit.Engine // shared compiled ruleset for local validation
-	Reloader func()        // called after config-changing writes; reloads rules/routes caches
-	Ready    ReadyChecker  // SAME gate as the data plane (review P1-2)
+	DB        *storage.DB
+	Auth      *auth.Service
+	OAuth     *accounts.Manager
+	Quota     *accounts.QuotaClient
+	Egress    *egress.Resolver
+	Rules     *audit.Engine // shared compiled ruleset for local validation
+	Reloader  func()        // called after config-changing writes; reloads rules/routes caches
+	Ready     ReadyChecker  // SAME gate as the data plane (review P1-2)
+	PriceSync func(context.Context) (billing.PriceSyncResult, error)
 
 	mu         sync.Mutex
 	loginFails map[string][]time.Time

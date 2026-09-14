@@ -56,6 +56,13 @@ func (s *StateTracker) SetSubscription(ctx context.Context, reqID, subscriptionI
 	return err
 }
 
+// SetRateMultiplier freezes the plan-version selling multiplier on the request
+// so reconciliation never depends on a later plan edit.
+func (s *StateTracker) SetRateMultiplier(ctx context.Context, reqID, multiplier string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE requests SET rate_multiplier=$2, updated_at=now() WHERE id=$1`, reqID, multiplier)
+	return err
+}
+
 // Transition moves the request to `state` with a reason. Transitions to a
 // non-terminal state return the version check failure as error.
 func (s *StateTracker) Transition(ctx context.Context, reqID, state, reason string) error {

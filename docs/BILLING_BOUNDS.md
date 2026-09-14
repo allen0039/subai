@@ -1,38 +1,40 @@
-# 费用上界（P0-02）
+# 计费模式与费用边界
 
-规格：§2.6、§18.1、§18.3。严格预算要求每个可计费调用形式都有可证明的费用上界。
+SubAI 支持两种计费模式，由 `SUBAI_BILLING_MODE` 选择。默认是更接近 Sub2API 的 `metered`；原有 `strict_reservation` 作为需要请求前硬上界的兼容模式保留。
 
-## 第一版实现的上界机制
+## metered（默认）
 
-1. **输出上界**：dispatch 前注入 `max_output_tokens = min(客户端值, SUBAI_OUTPUT_BOUND，默认 4096)`（D-001）。
-   - 待验证：上游是否在所有工具调用形式下尊重该参数（P0-02 blocked）。验证前该行为标记 pending。
-2. **输入上界**：`ceil(utf8_bytes/3) × 1.5` 保守估算（D-002），不做 tokenizer。
-3. **预留**：`RoundUpReservation(input_ub×input_rate + output_ub×output_rate)`，按激活价格版本冻结计算（§18.1）。
-4. **结算**：上游 usage 真实值，幂等键 (request_id, attempt_id)。`actual > reservation` 时如实记账（不截断）、置账号 recovery_hold、写 admin_events 告警（§18.3）。
+请求前只检查已有周期额度是否已经耗尽，不按估算 token 冻结金额。上游返回终端 usage 后，系统按真实 token 计算费用，通过 `(request_id, attempt_id, entry_type)` 幂等写账，并原子累加所有适用的日/周/月预算周期。
 
-## 计费公式（§18.1）
+套餐的日、周、月额度都留空表示不限额：请求仍会写 usage ledger，但不会创建预算 reservation。`rate_multiplier=0` 表示免费套餐，基础成本仍保存在账本中，用户额度消耗为 0。
 
+这种模式允许多个并发请求在结算时小幅超过周期额度；已经达到或超过额度后，后续请求会被拒绝。这是请求后真实计量换来的明确取舍。
+
+## strict_reservation（兼容）
+
+请求前按输入估算和输出上限计算候选费用，在所有适用预算周期中原子预留；没有预算策略时拒绝请求。上游返回 usage 后按真实费用结算，实际费用超过预留时如实记账，并将账号置为 recovery hold 等待核查。
+
+- 输出上界：注入 `max_output_tokens = min(客户端值, SUBAI_OUTPUT_BOUND)`，默认 4096。
+- 输入上界：`ceil(utf8_bytes/3) × 1.5`，不运行 tokenizer。
+- 金额使用 `NUMERIC(30,12)` 和 Decimal 运算。
+
+## 费用公式
+
+```text
+base_cost = (
+  uncached_input × input_rate
+  + cached_input × cached_rate
+  + output × output_rate
+) / 1,000,000 + supported_fixed_fees
+
+subscription_cost = base_cost × plan_rate_multiplier
 ```
-cost = (uncached_input × input_rate + cached_input × cached_rate + output × output_rate) / 1,000,000 + supported_fixed_fees
-```
 
-- `uncached_input = input_total − cached` 仅当 usage 明确包含缓存时成立；字段缺失/负数/不一致不接受为 0。
-- 固定费用只在 `fixed_fees.supported` 显式映射时计入；出现未知费用维度 → 该模型严格模式拒绝（`audit_unsupported: model has no price mapping` 或 FORMAT-003 路径）。
-- 金额 NUMERIC(30,12)，shopspring decimal，无浮点累计。
+`uncached_input = input_total − cached_input`，仅在 usage 字段完整、非负且 `cached_input <= input_total` 时成立。模型价格版本与套餐倍率都在请求上冻结，价格同步或套餐改版不会改变进行中请求。
 
-## 逐模型/模式上界状态
+## 保守失败语义
 
-| 调用形式 | 上界可证明？ | 说明 |
-|---|---|---|
-| /v1/responses 纯文本+工具（max_output_tokens 尊重） | 设计上可证明 | 待 P0-02 实测注入有效性 |
-| 上游忽略 max_output_tokens 的形式 | 不可证明 | 不进入严格预算支持清单（§2.6）；实测发现即告警+暂停 |
-| 图片输入 | 待定 | 价格档位未映射，当前被提取器/审核拒绝 |
-| 推理 token | 待定 | 若 output 已含推理 token 则不重复计费；字段语义待 P0-01 |
-
-## 缺失用量处理（§23 禁止条款）
-
-usage 缺失 → 请求置 `unknown`，预留保留、账号 recovery_hold；不自动退款、不当 0 处理。人工证据核对通过 `billing.AdjustUnknown` 追加 adjustment 账本行。
-
-## 实测记录
-
-无（blocked：无真实账号）。取得凭证后按模型逐项实测 max_output_tokens 有效性并回填本文件。
+- 未知模型或缺少价格：请求前拒绝，不按 0 价处理。
+- usage 缺失或不一致：请求置 `unknown`，账号进入 `unknown_pending` hold，不自动退款，也不记作 0 token。
+- 未映射费用维度：拒绝计价；管理员可依据证据走 `billing.AdjustUnknown` 补账。
+- 图片 token、cache write、service tier 和长上下文阶梯尚未接入本轮闭环。

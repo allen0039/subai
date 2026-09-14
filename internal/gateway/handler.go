@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"subai/internal/audit"
 	"subai/internal/auth"
 	"subai/internal/billing"
@@ -295,6 +297,18 @@ func (s *Server) Responses(w http.ResponseWriter, r *http.Request) {
 		errAuditUnsupported(rid, "model has no price mapping; strict budget refuses the call").write(w)
 		return
 	}
+	rateMultiplier, err := decimal.NewFromString(info.RateMultiplier)
+	if err != nil || rateMultiplier.IsNegative() {
+		_ = s.State.Transition(ctx, rid, "rejected", "invalid_rate_multiplier")
+		errAuditUnsupported(rid, "subscription has an invalid billing multiplier").write(w)
+		return
+	}
+	price = price.WithRateMultiplier(rateMultiplier)
+	if err := s.State.SetRateMultiplier(ctx, rid, rateMultiplier.StringFixed(12)); err != nil {
+		logStorageErr("set_rate_multiplier", err)
+		errUpstream(rid, "storage unavailable").write(w)
+		return
+	}
 
 	// 6. Audit pipeline (§3: always before upstream selection & dispatch).
 	if err := s.State.Transition(ctx, rid, "audit_queued", ""); err != nil {
@@ -384,8 +398,14 @@ func (s *Server) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 9. Budget reservation before any upstream byte (§18.3).
-	candidate := estimateReservation(body, price, s.Cfg)
-	if _, err := billing.Reserve(ctx, s.DB.Pool, info.MemberID, info.ID, acct.ID, groupID, rid, candidate, time.Now()); err != nil {
+	var admissionErr error
+	if s.Cfg.BillingMode == "strict_reservation" {
+		candidate := estimateReservation(body, price, s.Cfg)
+		_, admissionErr = billing.Reserve(ctx, s.DB.Pool, info.MemberID, info.ID, acct.ID, groupID, rid, candidate, time.Now())
+	} else {
+		_, admissionErr = billing.AdmitMetered(ctx, s.DB.Pool, info.MemberID, info.ID, acct.ID, groupID, rid, time.Now())
+	}
+	if admissionErr != nil {
 		_ = s.State.Transition(ctx, rid, "failed_before_dispatch", "budget_exceeded")
 		errBudget(rid, nextPeriodResetHint()).write(w)
 		return

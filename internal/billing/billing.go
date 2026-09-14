@@ -26,6 +26,7 @@ type ModelPrice struct {
 	CachedInputPerMTok decimal.Decimal
 	OutputPerMTok      decimal.Decimal
 	FixedFees          decimal.Decimal
+	RateMultiplier     *decimal.Decimal
 }
 
 type Usage struct {
@@ -50,8 +51,8 @@ func UsageFromTotal(input, cached, output int64) (Usage, error) {
 	return Usage{InputTokens: input - cached, CachedTokens: cached, OutputTokens: output}, nil
 }
 
-// Cost implements §18.1: cost = (in*in_rate + cached*cached_rate + out*out_rate)/1e6 + fixed.
-func (p *ModelPrice) Cost(u Usage) decimal.Decimal {
+// BaseCost returns the catalog cost before the plan's selling multiplier.
+func (p *ModelPrice) BaseCost(u Usage) decimal.Decimal {
 	mtok := decimal.NewFromInt(1_000_000)
 	cost := p.InputPerMTok.Mul(dec(u.InputTokens)).
 		Add(p.CachedInputPerMTok.Mul(dec(u.CachedTokens))).
@@ -62,6 +63,37 @@ func (p *ModelPrice) Cost(u Usage) decimal.Decimal {
 		return decimal.Zero
 	}
 	return cost
+}
+
+// Cost implements Sub2API-style selling price calculation: catalog cost times
+// the immutable plan-version multiplier selected by the API key.
+func (p *ModelPrice) Cost(u Usage) decimal.Decimal {
+	cost := p.BaseCost(u)
+	if p != nil && p.RateMultiplier != nil {
+		cost = cost.Mul(*p.RateMultiplier)
+	}
+	if cost.IsNegative() {
+		return decimal.Zero
+	}
+	return cost
+}
+
+// WithRateMultiplier returns a request-local copy; shared price catalog rows
+// remain immutable and safe for concurrent requests.
+func (p *ModelPrice) WithRateMultiplier(multiplier decimal.Decimal) *ModelPrice {
+	if p == nil {
+		return nil
+	}
+	copy := *p
+	copy.RateMultiplier = &multiplier
+	return &copy
+}
+
+func (p *ModelPrice) EffectiveRateMultiplier() decimal.Decimal {
+	if p != nil && p.RateMultiplier != nil {
+		return *p.RateMultiplier
+	}
+	return decimal.NewFromInt(1)
 }
 
 func dec(n int64) decimal.Decimal { return decimal.NewFromInt(n) }

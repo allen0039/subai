@@ -31,6 +31,7 @@ type KeyInfo struct {
 	ClientID          *string
 	SubscriptionID    string
 	SubscriptionLimit int
+	RateMultiplier    string
 	Name              string
 	Status            string
 	ExpiresAt         *time.Time
@@ -107,7 +108,8 @@ func (s *Service) lookupKeyDB(ctx context.Context, hash string) (*KeyInfo, error
 		       k.concurrency_limit, k.allowed_models, k.audit_policy_id, m.status,
 		       k.user_subscription_id::text, us.status, us.starts_at, us.expires_at,
 		       COALESCE(us.concurrency_override,pv.concurrency_limit),
-		       COALESCE(us.allowed_models_override,pv.allowed_models)
+		       COALESCE(us.allowed_models_override,pv.allowed_models),
+		       COALESCE(pv.rate_multiplier,1)::text
 		FROM api_keys k JOIN members m ON m.id = k.member_id
 		LEFT JOIN user_subscriptions us ON us.id=k.user_subscription_id AND us.member_id=k.member_id
 		LEFT JOIN plan_versions pv ON pv.id=us.plan_version_id
@@ -119,11 +121,14 @@ func (s *Service) lookupKeyDB(ctx context.Context, hash string) (*KeyInfo, error
 	var allowedModels, subscriptionModels []string
 	if err := row.Scan(&k.ID, &k.MemberID, &clientID, &k.Name, &k.Status, &k.ExpiresAt,
 		&k.ConcurrencyLimit, &allowedModels, &policyID, &k.MemberStatus,
-		&subscriptionID, &subscriptionStatus, &subscriptionStarts, &subscriptionExpires, &subscriptionLimit, &subscriptionModels); err != nil {
+		&subscriptionID, &subscriptionStatus, &subscriptionStarts, &subscriptionExpires, &subscriptionLimit, &subscriptionModels, &k.RateMultiplier); err != nil {
 		return nil, ErrInvalidKey
 	}
 	k.ClientID = clientID
 	k.AuditPolicyID = policyID
+	if k.RateMultiplier == "" {
+		k.RateMultiplier = "1"
+	}
 	if subscriptionID != nil {
 		if subscriptionStatus == nil || subscriptionStarts == nil || subscriptionExpires == nil || subscriptionLimit == nil || *subscriptionStatus != "active" || time.Now().Before(*subscriptionStarts) || !time.Now().Before(*subscriptionExpires) {
 			return nil, ErrMemberDenied

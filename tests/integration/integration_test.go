@@ -191,6 +191,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		UpstreamTimeout:  30 * time.Second,
 		UpstreamBaseURL:  up.srv.URL + "/responses",
 		OutputBound:      100,
+		BillingMode:      "strict_reservation",
 	}
 	cfg.UpstreamBaseURL = strings.TrimSuffix(cfg.UpstreamBaseURL, "/responses")
 
@@ -451,6 +452,116 @@ func TestBudgetExceededZeroUpstream(t *testing.T) {
 	}
 }
 
+// Sub2API-style metered mode checks that a period is not already exhausted,
+// makes no estimated hold, and charges the real usage after the response.
+func TestMeteredBillingChargesAfterUsageWithoutEstimatedHold(t *testing.T) {
+	requireDB(t)
+	e := newTestEnv(t)
+	e.gw.Cfg.BillingMode = "metered"
+	if _, err := e.db.Pool.Exec(context.Background(),
+		`UPDATE budget_policies SET amount=0.0000001 WHERE owner_type='key'`); err != nil {
+		t.Fatal(err)
+	}
+	rec := e.post(t, "/v1/responses", e.keyFull, body(true, "hello"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var amount, mode, cost string
+	if err := e.db.Pool.QueryRow(context.Background(), `
+		SELECT r.amount::text,r.billing_mode,l.cost::text
+		FROM reservations r JOIN usage_ledger l ON l.request_id=r.request_id
+		WHERE l.entry_type='charge' ORDER BY r.created_at LIMIT 1`).Scan(&amount, &mode, &cost); err != nil {
+		t.Fatal(err)
+	}
+	if amount != "0.000000000000" || mode != "metered" || cost != "0.000682000000" {
+		t.Fatalf("amount=%s mode=%s cost=%s", amount, mode, cost)
+	}
+}
+
+func TestMeteredBillingAppliesSubscriptionPlanMultiplier(t *testing.T) {
+	requireDB(t)
+	e := newTestEnv(t)
+	e.gw.Cfg.BillingMode = "metered"
+	ctx := context.Background()
+	var memberID, keyID, groupID, planID, versionID, subscriptionID string
+	if err := e.db.Pool.QueryRow(ctx, `SELECT id::text FROM members LIMIT 1`).Scan(&memberID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Pool.QueryRow(ctx, `SELECT id::text FROM api_keys LIMIT 1`).Scan(&keyID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Pool.QueryRow(ctx, `SELECT id::text FROM account_groups LIMIT 1`).Scan(&groupID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Pool.QueryRow(ctx, `INSERT INTO plans(name,status) VALUES('metered-plan','active') RETURNING id::text`).Scan(&planID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Pool.QueryRow(ctx, `
+		INSERT INTO plan_versions(plan_id,version_number,daily_limit_usd,weekly_limit_usd,monthly_limit_usd,rate_multiplier,concurrency_limit,max_keys,default_validity_days)
+		VALUES($1,1,10,20,30,1.5,2,2,30) RETURNING id::text`, planID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE plans SET current_version_id=$2 WHERE id=$1`, planID, versionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO plan_pool_bindings(plan_version_id,pool_id) VALUES($1,$2)`, versionID, groupID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Pool.QueryRow(ctx, `
+		INSERT INTO user_subscriptions(member_id,plan_version_id,status,starts_at,expires_at)
+		VALUES($1,$2,'active',now()-interval '1 minute',now()+interval '1 day') RETURNING id::text`, memberID, versionID).Scan(&subscriptionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE api_keys SET user_subscription_id=$2 WHERE id=$1`, keyID, subscriptionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.db.Pool.Exec(ctx, `
+		INSERT INTO budget_policies(owner_type,owner_subscription_id,period,timezone,mode,amount)
+		VALUES('subscription',$1,'day','UTC','fixed',10)`, subscriptionID); err != nil {
+		t.Fatal(err)
+	}
+	e.gw.Auth.InvalidateKeyCache()
+	e.gw.Sched.InvalidateRoutes()
+
+	rec := e.post(t, "/v1/responses", e.keyFull, body(true, "hello"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var baseCost, multiplier, actualCost, frozenMultiplier string
+	if err := e.db.Pool.QueryRow(ctx, `
+		SELECT l.base_cost::text,l.rate_multiplier::text,l.cost::text,r.rate_multiplier::text
+		FROM usage_ledger l JOIN requests r ON r.id=l.request_id
+		WHERE l.entry_type='charge'`).Scan(&baseCost, &multiplier, &actualCost, &frozenMultiplier); err != nil {
+		t.Fatal(err)
+	}
+	if baseCost != "0.000682000000" || multiplier != "1.500000000000" || actualCost != "0.001023000000" || frozenMultiplier != "1.500000000000" {
+		t.Fatalf("base=%s multiplier=%s actual=%s frozen=%s", baseCost, multiplier, actualCost, frozenMultiplier)
+	}
+}
+
+func TestPriceCatalogSyncActivatesNewModels(t *testing.T) {
+	requireDB(t)
+	e := newTestEnv(t)
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"gpt-new":{"input_cost_per_token":0.000002,"cache_read_input_token_cost":0.0000002,"output_cost_per_token":0.00001}}`))
+	}))
+	defer catalog.Close()
+	result, err := billing.SyncPriceCatalog(context.Background(), e.db.Pool, catalog.Client(), catalog.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Activated || result.Models != 1 {
+		t.Fatalf("unexpected sync result: %#v", result)
+	}
+	price, err := billing.ModelPriceFor(context.Background(), e.db.Pool, result.VersionID, "gpt-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if price.InputPerMTok.String() != "2" || price.CachedInputPerMTok.String() != "0.2" || price.OutputPerMTok.String() != "10" {
+		t.Fatalf("unexpected imported price: %#v", price)
+	}
+}
+
 // T-P4-01: no budget covering the request → refuse (§18.2).
 func TestNoBudgetRefused(t *testing.T) {
 	requireDB(t)
@@ -464,6 +575,29 @@ func TestNoBudgetRefused(t *testing.T) {
 	}
 	if e.up.count() != 0 {
 		t.Fatalf("upstream must see zero calls")
+	}
+}
+
+func TestMeteredBillingAllowsUnlimitedSubscription(t *testing.T) {
+	requireDB(t)
+	e := newTestEnv(t)
+	e.gw.Cfg.BillingMode = "metered"
+	if _, err := e.db.Pool.Exec(context.Background(), `DELETE FROM budget_policies`); err != nil {
+		t.Fatal(err)
+	}
+	rec := e.post(t, "/v1/responses", e.keyFull, body(true, "hello"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var ledgerRows, reservationRows int
+	if err := e.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM usage_ledger WHERE entry_type='charge'`).Scan(&ledgerRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM reservations`).Scan(&reservationRows); err != nil {
+		t.Fatal(err)
+	}
+	if ledgerRows != 1 || reservationRows != 0 {
+		t.Fatalf("ledger rows=%d reservation rows=%d", ledgerRows, reservationRows)
 	}
 }
 
