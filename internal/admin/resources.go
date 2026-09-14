@@ -2,7 +2,9 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -335,7 +337,7 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	args = append(args, limit, offset)
 	rows, err := s.DB.Pool.Query(r.Context(), `
-		SELECT a.id::text, a.provider, a.label, a.state, a.concurrency_limit, a.priority,
+		SELECT a.id::text, a.provider, a.label, COALESCE(a.upstream_base_url,''), a.state, a.concurrency_limit, a.priority,
 		       COALESCE(a.egress_policy_id::text,''), a.credential_version, COALESCE(a.expires_at::text,''),
 		       a.version, a.created_at::text, COALESCE(ep.name,'未配置'), COALESCE(pp.name,'未配置'),
 		       COALESCE(q.snapshot::text,'null'), COALESCE(q.fetched_at::text,''),
@@ -352,10 +354,10 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, provider, label, state, egress, expires, created, policyName, proxyName string
+		var id, provider, label, upstreamBaseURL, state, egress, expires, created, policyName, proxyName string
 		var quotaJSON, quotaFetched, quotaAttempt, quotaError string
 		var limit, priority, credVersion, version int
-		if err := rows.Scan(&id, &provider, &label, &state, &limit, &priority, &egress, &credVersion, &expires, &version, &created, &policyName, &proxyName, &quotaJSON, &quotaFetched, &quotaAttempt, &quotaError); err != nil {
+		if err := rows.Scan(&id, &provider, &label, &upstreamBaseURL, &state, &limit, &priority, &egress, &credVersion, &expires, &version, &created, &policyName, &proxyName, &quotaJSON, &quotaFetched, &quotaAttempt, &quotaError); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
@@ -364,7 +366,7 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal([]byte(quotaJSON), &quota)
 		}
 		out = append(out, map[string]any{
-			"id": id, "provider": provider, "label": label, "state": state,
+			"id": id, "provider": provider, "label": label, "upstream_base_url": upstreamBaseURL, "state": state,
 			"concurrency_limit": limit, "priority": priority, "egress_policy_id": egress,
 			"egress_policy_name": policyName, "proxy_name": proxyName,
 			"credential_version": credVersion, "expires_at": expires, "version": version, "created_at": created,
@@ -376,7 +378,9 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createAccount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		Provider         string `json:"provider"`
 		Label            string `json:"label"`
+		UpstreamBaseURL  string `json:"upstream_base_url"`
 		ConcurrencyLimit *int   `json:"concurrency_limit"`
 		Priority         *int   `json:"priority"`
 		EgressPolicyID   string `json:"egress_policy_id"`
@@ -385,8 +389,25 @@ func (s *Server) createAccount(w http.ResponseWriter, r *http.Request) {
 		AccountID        string `json:"account_id"`
 		ExpiresAt        string `json:"expires_at"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Label == "" || req.AccessToken == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Label) == "" || strings.TrimSpace(req.AccessToken) == "" {
 		s.writeErr(w, 400, "label and access_token required")
+		return
+	}
+	req.Provider = strings.TrimSpace(req.Provider)
+	if req.Provider == "" {
+		req.Provider = "codex"
+	}
+	if req.Provider != "codex" && req.Provider != "openai_compatible" {
+		s.writeErr(w, 400, "provider must be codex or openai_compatible")
+		return
+	}
+	if req.Provider == "openai_compatible" {
+		if err := validateOpenAICompatibleBaseURL(req.UpstreamBaseURL); err != nil {
+			s.writeErr(w, 400, err.Error())
+			return
+		}
+	} else if strings.TrimSpace(req.UpstreamBaseURL) != "" {
+		s.writeErr(w, 400, "upstream_base_url is only valid for openai_compatible accounts")
 		return
 	}
 	limit, priority := 1, 100
@@ -405,16 +426,16 @@ func (s *Server) createAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	var id string
 	err = s.DB.Pool.QueryRow(r.Context(), `
-		INSERT INTO accounts(label, credentials_ciphertext, concurrency_limit, priority, egress_policy_id)
-		VALUES($1,$2,$3,$4,NULLIF($5,'')::uuid) RETURNING id::text`,
-		req.Label, sealed, limit, priority, req.EgressPolicyID).Scan(&id)
+		INSERT INTO accounts(provider, label, upstream_base_url, credentials_ciphertext, concurrency_limit, priority, egress_policy_id)
+		VALUES($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,'')::uuid) RETURNING id::text`,
+		req.Provider, strings.TrimSpace(req.Label), strings.TrimSpace(req.UpstreamBaseURL), sealed, limit, priority, req.EgressPolicyID).Scan(&id)
 	if err != nil {
 		s.writeErr(w, 409, err.Error())
 		return
 	}
 	s.notifyMutation()
 	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "account.create", "account", id,
-		storage.SanitizeForAdminEvent(map[string]any{"label": req.Label, "concurrency_limit": limit}), "")
+		storage.SanitizeForAdminEvent(map[string]any{"label": req.Label, "provider": req.Provider, "concurrency_limit": limit}), "")
 	s.writeJSON(w, 201, map[string]any{"id": id})
 }
 
@@ -426,6 +447,8 @@ func (s *Server) patchAccount(w http.ResponseWriter, r *http.Request, id string)
 		ConcurrencyLimit *int    `json:"concurrency_limit"`
 		Priority         *int    `json:"priority"`
 		EgressPolicyID   *string `json:"egress_policy_id"`
+		UpstreamBaseURL  *string `json:"upstream_base_url"`
+		APIKey           *string `json:"api_key"`
 		Version          int     `json:"version"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || expectVersion(req.Version) != nil {
@@ -447,6 +470,53 @@ func (s *Server) patchAccount(w http.ResponseWriter, r *http.Request, id string)
 	if err := accounts.LockTx(r.Context(), tx, id); err != nil {
 		s.writeErr(w, 404, "account not found")
 		return
+	}
+	var provider string
+	if err := tx.QueryRow(r.Context(), `SELECT provider FROM accounts WHERE id=$1`, id).Scan(&provider); err != nil {
+		s.writeErr(w, 404, "account not found")
+		return
+	}
+	if (req.UpstreamBaseURL != nil || req.APIKey != nil) && provider != "openai_compatible" {
+		s.writeErr(w, 400, "only openai_compatible accounts can update relay settings")
+		return
+	}
+	if req.UpstreamBaseURL != nil {
+		if err := validateOpenAICompatibleBaseURL(*req.UpstreamBaseURL); err != nil {
+			s.writeErr(w, 400, err.Error())
+			return
+		}
+	}
+	if req.APIKey != nil {
+		if strings.TrimSpace(*req.APIKey) == "" {
+			s.writeErr(w, 400, "api_key must not be empty")
+			return
+		}
+		var sealed []byte
+		if err := tx.QueryRow(r.Context(), `SELECT credentials_ciphertext FROM accounts WHERE id=$1`, id).Scan(&sealed); err != nil {
+			s.writeErr(w, 500, "failed to load account credentials")
+			return
+		}
+		plain, err := s.DB.Decrypt(sealed)
+		if err != nil {
+			s.writeErr(w, 500, "failed to decrypt account credentials")
+			return
+		}
+		var creds map[string]any
+		if err := json.Unmarshal(plain, &creds); err != nil {
+			s.writeErr(w, 500, "invalid account credentials")
+			return
+		}
+		creds["access_token"] = strings.TrimSpace(*req.APIKey)
+		updated, _ := json.Marshal(creds)
+		sealed, err = s.DB.Encrypt(updated)
+		if err != nil {
+			s.writeErr(w, 500, "failed to encrypt account credentials")
+			return
+		}
+		if _, err := tx.Exec(r.Context(), `UPDATE accounts SET credentials_ciphertext=$2,credential_version=credential_version+1,updated_at=now() WHERE id=$1`, id, sealed); err != nil {
+			s.writeErr(w, 500, "failed to update account credentials")
+			return
+		}
 	}
 	// Activation and hold writers serialize on the same account row.
 	if req.State != nil && *req.State == "active" {
@@ -487,6 +557,10 @@ func (s *Server) patchAccount(w http.ResponseWriter, r *http.Request, id string)
 	if req.EgressPolicyID != nil {
 		egress = *req.EgressPolicyID
 	}
+	var upstreamBaseURL any
+	if req.UpstreamBaseURL != nil {
+		upstreamBaseURL = strings.TrimSpace(*req.UpstreamBaseURL)
+	}
 	tag, err := tx.Exec(r.Context(), `
 		UPDATE accounts SET
 			state = COALESCE(NULLIF($2,''), state),
@@ -494,9 +568,10 @@ func (s *Server) patchAccount(w http.ResponseWriter, r *http.Request, id string)
 			priority = COALESCE($4, priority),
 			egress_policy_id = CASE WHEN $5::text IS NULL THEN egress_policy_id ELSE NULLIF($5::text,'')::uuid END,
             label = COALESCE($7,label),
+			upstream_base_url = COALESCE($8,upstream_base_url),
 			version = version + 1, updated_at = now()
 		WHERE id=$1 AND version=$6`,
-		id, deref(req.State), req.ConcurrencyLimit, req.Priority, egress, req.Version, req.Label)
+		id, deref(req.State), req.ConcurrencyLimit, req.Priority, egress, req.Version, req.Label, upstreamBaseURL)
 	if err != nil || tag.RowsAffected() == 0 {
 		s.writeErr(w, 409, "version conflict or account not found")
 		return
@@ -509,6 +584,16 @@ func (s *Server) patchAccount(w http.ResponseWriter, r *http.Request, id string)
 	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "account.update", "account", id,
 		storage.SanitizeForAdminEvent(map[string]any{"state": deref(req.State), "version": req.Version}), "")
 	s.writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// validateOpenAICompatibleBaseURL keeps per-account endpoint configuration
+// unambiguous while allowing private HTTP relays used in local deployments.
+func validateOpenAICompatibleBaseURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("upstream_base_url must be an absolute http(s) base URL without credentials, query, or fragment")
+	}
+	return nil
 }
 
 func deref(p *string) string {
@@ -524,7 +609,9 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	limit, offset, _ := pageParams(r, []string{"created_at", "name"})
 	rows, err := s.DB.Pool.Query(r.Context(), `
 		SELECT g.id::text, g.name, g.description, g.strategy, g.status, g.version,
-		       COALESCE((SELECT array_agg(a.label ORDER BY a.priority) FROM account_group_members m
+		       COALESCE((SELECT array_agg(a.label ORDER BY a.priority,a.id) FROM account_group_members m
+		                 JOIN accounts a ON a.id=m.account_id WHERE m.group_id=g.id), '{}'),
+		       COALESCE((SELECT array_agg(a.id::text ORDER BY a.priority,a.id) FROM account_group_members m
 		                 JOIN accounts a ON a.id=m.account_id WHERE m.group_id=g.id), '{}')
 		FROM account_groups g ORDER BY g.created_at DESC, g.id LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
@@ -536,12 +623,12 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id, name, description, strategy, status string
 		var version int
-		var accountsList []string
-		if err := rows.Scan(&id, &name, &description, &strategy, &status, &version, &accountsList); err != nil {
+		var accountsList, accountIDs []string
+		if err := rows.Scan(&id, &name, &description, &strategy, &status, &version, &accountsList, &accountIDs); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
-		out = append(out, map[string]any{"id": id, "name": name, "description": description, "strategy": strategy, "status": status, "version": version, "accounts": accountsList})
+		out = append(out, map[string]any{"id": id, "name": name, "description": description, "strategy": strategy, "status": status, "version": version, "accounts": accountsList, "account_ids": accountIDs})
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})
 }
@@ -572,6 +659,57 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	s.notifyMutation()
 	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "group.create", "account_group", id, nil, "")
 	s.writeJSON(w, 201, map[string]any{"id": id})
+}
+
+func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request, id string) {
+	var req struct {
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+		Strategy    *string `json:"strategy"`
+		Status      *string `json:"status"`
+		Version     int     `json:"version"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || expectVersion(req.Version) != nil {
+		s.writeErr(w, http.StatusBadRequest, "version required")
+		return
+	}
+	if req.Name != nil {
+		*req.Name = strings.TrimSpace(*req.Name)
+		if *req.Name == "" {
+			s.writeErr(w, http.StatusBadRequest, "name required")
+			return
+		}
+	}
+	if req.Strategy != nil {
+		strategy := strings.TrimSpace(*req.Strategy)
+		if strategy != "round_robin" && strategy != "weighted_round_robin" && strategy != "priority_failover" {
+			s.writeErr(w, http.StatusBadRequest, "invalid strategy")
+			return
+		}
+		*req.Strategy = strategy
+	}
+	if req.Status != nil && *req.Status != "active" && *req.Status != "disabled" {
+		s.writeErr(w, http.StatusBadRequest, "invalid status")
+		return
+	}
+	tag, err := s.DB.Pool.Exec(r.Context(), `
+		UPDATE account_groups SET
+			name=COALESCE($2,name), description=COALESCE($3,description),
+			strategy=COALESCE($4,strategy), status=COALESCE($5,status),
+			version=version+1, updated_at=now()
+		WHERE id=$1 AND version=$6`, id, req.Name, req.Description, req.Strategy, req.Status, req.Version)
+	if err != nil {
+		s.writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		s.writeErr(w, http.StatusConflict, "version conflict or account pool not found")
+		return
+	}
+	s.notifyMutation()
+	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "group.update", "account_group", id,
+		storage.SanitizeForAdminEvent(map[string]any{"version": req.Version}), "")
+	s.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) groupAddAccount(w http.ResponseWriter, r *http.Request, groupID string) {

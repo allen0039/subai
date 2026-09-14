@@ -30,6 +30,52 @@ func (s *Server) refreshAccountQuota(w http.ResponseWriter, r *http.Request, acc
 	s.writeJSON(w, 200, map[string]any{"quota": snapshot, "quota_fetched_at": snapshot.FetchedAt, "quota_error": ""})
 }
 
+func (s *Server) consumeAccountResetCredit(w http.ResponseWriter, r *http.Request, accountID string) {
+	if s.Quota == nil || s.Egress == nil {
+		s.writeErr(w, http.StatusServiceUnavailable, "重置卡服务尚未配置")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
+	defer cancel()
+	creds, policyID, expiresAt, err := s.loadQuotaAccount(ctx, accountID)
+	if err == nil && expiresAt != nil && time.Until(*expiresAt) < 5*time.Minute && s.OAuth != nil {
+		if refreshErr := s.OAuth.Refresh(ctx, accountID); refreshErr != nil && time.Now().After(*expiresAt) {
+			err = errors.New("账号凭证已到期，自动刷新失败，请重新授权")
+		} else {
+			creds, policyID, _, err = s.loadQuotaAccount(ctx, accountID)
+		}
+	}
+	if err != nil {
+		s.writeErr(w, http.StatusBadGateway, quotaErrorMessage(err))
+		return
+	}
+	result, snapshot, refreshErr := s.consumeResetCreditViaPolicy(ctx, policyID, creds)
+	if result == nil {
+		s.writeErr(w, http.StatusBadGateway, quotaErrorMessage(refreshErr))
+		return
+	}
+	if snapshot != nil {
+		if err := s.saveAccountQuotaSnapshot(ctx, accountID, snapshot); err != nil {
+			refreshErr = errors.New("重置卡已使用，但保存最新额度失败；请手动刷新确认")
+		}
+	}
+	meta := map[string]any{"windows_reset": result.WindowsReset}
+	if snapshot != nil && snapshot.RateLimitResetCredits != nil {
+		meta["available_count"] = snapshot.RateLimitResetCredits.AvailableCount
+	}
+	s.DB.LogAdminEvent(ctx, actorFrom(r), "account.quota_reset_credit_consume", "account", accountID,
+		storage.SanitizeForAdminEvent(meta), "")
+	response := map[string]any{"consumed": true, "windows_reset": result.WindowsReset}
+	if snapshot != nil {
+		response["quota"] = snapshot
+		response["quota_fetched_at"] = snapshot.FetchedAt
+	}
+	if refreshErr != nil {
+		response["warning"] = "重置卡已使用，但无法自动刷新额度；请稍后手动刷新确认。"
+	}
+	s.writeJSON(w, http.StatusOK, response)
+}
+
 func (s *Server) syncAccountQuota(ctx context.Context, accountID string) (*accounts.QuotaSnapshot, error) {
 	creds, policyID, expiresAt, err := s.loadQuotaAccount(ctx, accountID)
 	if err == nil && expiresAt != nil && time.Until(*expiresAt) < 5*time.Minute && s.OAuth != nil {
@@ -53,9 +99,16 @@ func (s *Server) syncAccountQuota(ctx context.Context, accountID string) (*accou
 			ON CONFLICT(account_id) DO UPDATE SET last_attempt_at=now(),fetch_error=EXCLUDED.fetch_error,updated_at=now()`, accountID, message)
 		return nil, errors.New(message)
 	}
+	if err := s.saveAccountQuotaSnapshot(ctx, accountID, snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+func (s *Server) saveAccountQuotaSnapshot(ctx context.Context, accountID string, snapshot *accounts.QuotaSnapshot) error {
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
-		return nil, errors.New("保存额度数据失败")
+		return errors.New("保存额度数据失败")
 	}
 	_, err = s.DB.Pool.Exec(ctx, `
 		INSERT INTO account_quota_snapshots(account_id,snapshot,fetched_at,last_attempt_at,fetch_error,updated_at)
@@ -63,9 +116,39 @@ func (s *Server) syncAccountQuota(ctx context.Context, accountID string) (*accou
 		ON CONFLICT(account_id) DO UPDATE SET snapshot=EXCLUDED.snapshot,fetched_at=EXCLUDED.fetched_at,
 			last_attempt_at=now(),fetch_error='',updated_at=now()`, accountID, raw, snapshot.FetchedAt)
 	if err != nil {
-		return nil, errors.New("保存额度数据失败")
+		return errors.New("保存额度数据失败")
 	}
-	return snapshot, nil
+	return nil
+}
+
+// consumeResetCreditViaPolicy makes exactly one consume request through the
+// first usable egress profile. It deliberately does not retry on another
+// profile after the POST begins: a lost response is an unknown outcome and a
+// retry could consume two cards.
+func (s *Server) consumeResetCreditViaPolicy(ctx context.Context, policyID string, creds accounts.QuotaCredentials) (*accounts.ResetCreditResult, *accounts.QuotaSnapshot, error) {
+	profiles := []egress.Profile{{ID: "direct", Name: "直接连接", Kind: "direct", Status: "active"}}
+	if policyID != "" {
+		policy, err := s.Egress.GetPolicy(ctx, policyID)
+		if err != nil {
+			return nil, nil, errors.New("账号出口策略不可用")
+		}
+		profiles = append([]egress.Profile{policy.Primary}, policy.Fallbacks...)
+	}
+	var lastErr error
+	for _, profile := range profiles {
+		client, err := egress.ClientForProfile(profile, 25*time.Second)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		result, err := s.Quota.ConsumeResetCredit(ctx, client, creds)
+		if err != nil {
+			return nil, nil, err
+		}
+		snapshot, refreshErr := s.Quota.Fetch(ctx, client, creds)
+		return result, snapshot, refreshErr
+	}
+	return nil, nil, lastErr
 }
 
 func (s *Server) loadQuotaAccount(ctx context.Context, accountID string) (accounts.QuotaCredentials, string, *time.Time, error) {

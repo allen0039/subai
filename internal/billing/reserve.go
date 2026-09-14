@@ -179,7 +179,7 @@ type SettleResult struct {
 // and reconciles every reservation scope. actual cost is never truncated to
 // the reserved amount (§18.3); over-reservation flips the account into
 // recovery_hold and raises an admin event.
-func Settle(ctx context.Context, pool Pool, requestID string, attemptID int64, keyID, accountID string, usage Usage, price *ModelPrice, priceVersionID string) (SettleResult, error) {
+func Settle(ctx context.Context, pool Pool, requestID string, attemptID int64, keyID, accountID string, usage Usage, catalogPrice, price *ModelPrice, priceVersionID string) (SettleResult, error) {
 	var result SettleResult
 	if err := usage.Validate(); err != nil {
 		return result, err
@@ -188,7 +188,8 @@ func Settle(ctx context.Context, pool Pool, requestID string, attemptID int64, k
 		if err := accounts.LockTx(ctx, tx, accountID); err != nil {
 			return err
 		}
-		baseCost := price.BaseCost(usage)
+		baseCost := catalogPrice.BaseCost(usage)
+		pricingBaseCost := price.BaseCost(usage)
 		cost := price.Cost(usage)
 		result.Cost = cost
 		// Idempotent insert: the unique (request_id, attempt_id, entry_type)
@@ -196,11 +197,11 @@ func Settle(ctx context.Context, pool Pool, requestID string, attemptID int64, k
 		// settlements converge on exactly one charge row (§18.3).
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO usage_ledger(request_id, attempt_id, api_key_id, account_id, user_subscription_id,
-				input_tokens, cached_input_tokens, output_tokens, base_cost, rate_multiplier, cost, price_version_id, entry_type, details)
-			VALUES($1,$2,$3,$4,(SELECT user_subscription_id FROM api_keys WHERE id=$3),$5,$6,$7,$8,$9,$10,$11,'charge',$12)
+				input_tokens, cached_input_tokens, output_tokens, base_cost, pricing_base_cost, rate_multiplier, cost, price_version_id, entry_type, details)
+			VALUES($1,$2,$3,$4,(SELECT user_subscription_id FROM api_keys WHERE id=$3),$5,$6,$7,$8,$9,$10,$11,$12,'charge',$13)
 			ON CONFLICT (request_id, attempt_id, entry_type) DO NOTHING`,
 			requestID, attemptID, keyID, nullIfEmpty(accountID),
-			usage.InputTokens, usage.CachedTokens, usage.OutputTokens, baseCost, price.EffectiveRateMultiplier(), cost, nullIfEmpty(priceVersionID),
+			usage.InputTokens, usage.CachedTokens, usage.OutputTokens, baseCost, pricingBaseCost, price.EffectiveRateMultiplier(), cost, nullIfEmpty(priceVersionID),
 			jsonRaw(`{"settled_at_flow":"normal"}`))
 		if err != nil {
 			return err
@@ -274,7 +275,7 @@ func Settle(ctx context.Context, pool Pool, requestID string, attemptID int64, k
 // AdjustUnknown applies an evidence-driven manual settlement for a request in
 // unknown state: appends an `adjustment` ledger row and reconciles the held
 // funds. No timeout may do this automatically (§18.3).
-func AdjustUnknown(ctx context.Context, pool Pool, requestID string, actor string, usage Usage, price *ModelPrice, priceVersionID string) (AdjustResult, error) {
+func AdjustUnknown(ctx context.Context, pool Pool, requestID string, actor string, usage Usage, catalogPrice, price *ModelPrice, priceVersionID string) (AdjustResult, error) {
 	var result AdjustResult
 	if err := usage.Validate(); err != nil {
 		return result, err
@@ -302,11 +303,11 @@ func AdjustUnknown(ctx context.Context, pool Pool, requestID string, actor strin
 		result.Cost = price.Cost(usage)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO usage_ledger(request_id, attempt_id, api_key_id, account_id,
-				input_tokens, cached_input_tokens, output_tokens, cost, price_version_id, entry_type, details)
-			VALUES($1,0,$2,$3,$4,$5,$6,$7,$8,'adjustment',$9)
+				input_tokens, cached_input_tokens, output_tokens, base_cost, pricing_base_cost, rate_multiplier, cost, price_version_id, entry_type, details)
+			VALUES($1,0,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'adjustment',$12)
 			ON CONFLICT (request_id, attempt_id, entry_type) DO NOTHING`,
 			requestID, *keyID, accountID, usage.InputTokens, usage.CachedTokens, usage.OutputTokens,
-			result.Cost, nullIfEmpty(priceVersionID), jsonRaw(fmt.Sprintf(`{"actor":%q,"source":"manual_evidence"}`, actor))); err != nil {
+			catalogPrice.BaseCost(usage), price.BaseCost(usage), price.EffectiveRateMultiplier(), result.Cost, nullIfEmpty(priceVersionID), jsonRaw(fmt.Sprintf(`{"actor":%q,"source":"manual_evidence"}`, actor))); err != nil {
 			return err
 		}
 		rows, err := tx.Query(ctx,

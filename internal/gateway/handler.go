@@ -291,7 +291,7 @@ func (s *Server) Responses(w http.ResponseWriter, r *http.Request) {
 		s.Ready.NotReadyError(rid).write(w)
 		return
 	}
-	price, err := billing.ModelPriceFor(ctx, s.DB.Pool, priceVersion, model)
+	catalogPrice, err := billing.ModelPriceFor(ctx, s.DB.Pool, priceVersion, model)
 	if err != nil {
 		_ = s.State.Transition(ctx, rid, "rejected", "unknown_model_price")
 		errAuditUnsupported(rid, "model has no price mapping; strict budget refuses the call").write(w)
@@ -303,8 +303,13 @@ func (s *Server) Responses(w http.ResponseWriter, r *http.Request) {
 		errAuditUnsupported(rid, "subscription has an invalid billing multiplier").write(w)
 		return
 	}
-	price = price.WithRateMultiplier(rateMultiplier)
-	if err := s.State.SetRateMultiplier(ctx, rid, rateMultiplier.StringFixed(12)); err != nil {
+	price, pricingSource, err := billing.ResolveEffectivePrice(ctx, s.DB.Pool, info.PlanVersionID, model, catalogPrice, rateMultiplier)
+	if err != nil {
+		_ = s.State.Transition(ctx, rid, "rejected", "invalid_plan_model_pricing")
+		errUpstream(rid, "pricing configuration unavailable").write(w)
+		return
+	}
+	if err := s.State.SetRateMultiplier(ctx, rid, price.EffectiveRateMultiplier().StringFixed(12)); err != nil {
 		logStorageErr("set_rate_multiplier", err)
 		errUpstream(rid, "storage unavailable").write(w)
 		return
@@ -375,7 +380,7 @@ func (s *Server) Responses(w http.ResponseWriter, r *http.Request) {
 	// (§1, §19 + review P2-11): capacity-aware pick closes the pick/race window.
 	stickySession := r.Header.Get("X-Session-Id")
 	stickyID := s.Sticky.Get(info.ID, stickySession)
-	acct, releaseSlots, err := s.Sched.AcquireAccountWithSubscription(ctx, info.ID, info.ConcurrencyLimit, info.SubscriptionID, info.SubscriptionLimit, stickyID)
+	acct, releaseSlots, err := s.Sched.AcquireModelRoute(ctx, info.ID, info.ConcurrencyLimit, info.SubscriptionID, info.SubscriptionLimit, model, stickyID)
 	if err != nil {
 		_ = s.State.Transition(ctx, rid, "failed_before_dispatch", "no_account")
 		switch {
@@ -393,6 +398,15 @@ func (s *Server) Responses(w http.ResponseWriter, r *http.Request) {
 	groupID := acct.GroupID
 	if err := s.State.SetRouting(ctx, rid, acct.ID, groupID, result.Coverage, priceVersion); err != nil {
 		logStorageErr("set_routing", err)
+		errUpstream(rid, "storage unavailable").write(w)
+		return
+	}
+	upstreamModel := acct.UpstreamModel
+	if upstreamModel == "" {
+		upstreamModel = model
+	}
+	if err := s.State.SetModelResolution(ctx, rid, upstreamModel, info.PlanVersionID, pricingSource); err != nil {
+		logStorageErr("set_model_resolution", err)
 		errUpstream(rid, "storage unavailable").write(w)
 		return
 	}
@@ -434,8 +448,8 @@ func (s *Server) Responses(w http.ResponseWriter, r *http.Request) {
 	upstreamCtx, cancelUpstream := context.WithTimeout(context.WithoutCancel(ctx), s.Cfg.UpstreamTimeout)
 	defer cancelUpstream()
 
-	payload := s.prepareUpstreamPayload(body)
-	creds, err := s.accountCredentials(upstreamCtx, acct.ID)
+	payload := s.prepareUpstreamPayload(body, acct.UpstreamModel)
+	creds, err := s.accountCredentials(upstreamCtx, acct)
 	if err != nil {
 		logStorageErr("credentials", err)
 		// Never dispatched: release funds, terminal state, explicit error.
@@ -522,7 +536,7 @@ func (s *Server) Responses(w http.ResponseWriter, r *http.Request) {
 		InputTokens:  usageOut.InputTokens,
 		CachedTokens: usageOut.CachedTokens,
 		OutputTokens: usageOut.OutputTokens,
-	}, price, priceVersion); err != nil {
+	}, catalogPrice, price, priceVersion); err != nil {
 		logStorageErr("settle", err)
 		// Settle failed: funds stay unknown AND the account must stop taking
 		// new work until reconciliation (review R2-05: 收敛函数统一处理).
@@ -572,7 +586,11 @@ func (s *Server) dispatchViaEgress(ctx context.Context, acct *scheduler.Account,
 	timeout := s.Cfg.UpstreamTimeout
 	sent := false
 	call := func(client *http.Client, prof egress.Profile) error {
-		resp, err := s.Upstream.Dispatch(ctx, client, prof, creds, payload)
+		baseURL := s.Upstream.BaseURL
+		if acct.Provider == "openai_compatible" {
+			baseURL = acct.UpstreamBaseURL
+		}
+		resp, err := s.Upstream.Dispatch(ctx, client, prof, acct.Provider, baseURL, creds, payload)
 		if err != nil {
 			return err
 		}
@@ -607,18 +625,23 @@ type upstreamStatusError struct{ status int }
 func (u *upstreamStatusError) Error() string   { return "upstream status " + itoa(u.status) }
 func (u *upstreamStatusError) HTTPStatus() int { return u.status }
 
-func (s *Server) accountCredentials(ctx context.Context, accountID string) (Credentials, error) {
-	creds, err := s.loadCredentials(ctx, accountID)
+func (s *Server) accountCredentials(ctx context.Context, acct *scheduler.Account) (Credentials, error) {
+	creds, err := s.loadCredentials(ctx, acct.ID)
 	if err != nil {
 		return Credentials{}, err
+	}
+	// Relay API keys are static from this gateway's perspective; only direct
+	// Codex OAuth credentials should go through the refresh flow.
+	if acct.Provider != "codex" {
+		return creds, nil
 	}
 	// Proactive refresh (review P1-6): never send a known-expired token
 	// upstream; Refresh holds the per-account mutex and is version-guarded.
 	if creds.ExpiresAt != nil && creds.ExpiresAt.Before(time.Now().Add(60*time.Second)) {
 		if s.Refresh != nil {
-			if rerr := s.Refresh.Refresh(ctx, accountID); rerr != nil {
+			if rerr := s.Refresh.Refresh(ctx, acct.ID); rerr != nil {
 				logStorageErr("token_refresh", rerr)
-				reloaded, lerr := s.loadCredentials(ctx, accountID)
+				reloaded, lerr := s.loadCredentials(ctx, acct.ID)
 				if lerr != nil {
 					return Credentials{}, lerr
 				}
@@ -627,7 +650,7 @@ func (s *Server) accountCredentials(ctx context.Context, accountID string) (Cred
 				}
 				return reloaded, nil
 			}
-			return s.loadCredentials(ctx, accountID)
+			return s.loadCredentials(ctx, acct.ID)
 		}
 		if creds.ExpiresAt.Before(time.Now()) {
 			return Credentials{}, errors.New("account token expired (no refresher configured)")
@@ -662,7 +685,7 @@ func (s *Server) loadCredentials(ctx context.Context, accountID string) (Credent
 }
 
 // prepareUpstreamPayload injects the output bound (D-001).
-func (s *Server) prepareUpstreamPayload(body []byte) []byte {
+func (s *Server) prepareUpstreamPayload(body []byte, upstreamModel string) []byte {
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return body
@@ -675,6 +698,9 @@ func (s *Server) prepareUpstreamPayload(body []byte) []byte {
 		}
 	}
 	payload["max_output_tokens"], _ = json.Marshal(bound)
+	if upstreamModel != "" {
+		payload["model"], _ = json.Marshal(upstreamModel)
+	}
 	delete(payload, "previous_response_id") // unsupported coverage is rejected earlier; belt & braces
 	out, err := json.Marshal(payload)
 	if err != nil {

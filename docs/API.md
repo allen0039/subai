@@ -51,12 +51,12 @@
 | 客户端 | GET/POST /clients；PATCH /clients/{id} |
 | Key | GET/POST /keys；PATCH /keys/{id}；POST /keys/{id}/revoke；GET/POST/DELETE /keys/{id}/routes |
 | OAuth | POST /accounts/oauth/sessions；GET /accounts/oauth/sessions/{id}；公开回调 GET /api/oauth/callback |
-| 账号 | GET/POST /accounts；PATCH /accounts/{id}（状态机：active/paused/reauth_required/quota_exhausted/recovery_hold） |
-| 账号组 | GET/POST /groups；POST /groups/{id}（body: account_id, weight） |
+| 账号 | GET/POST /accounts；PATCH /accounts/{id}（状态机：active/paused/reauth_required/quota_exhausted/recovery_hold）；GET/POST/DELETE /accounts/{id}/model-capabilities |
+| 账号组 | GET/POST /groups；POST /groups/{id}（body: account_id, weight）；GET/POST/DELETE /account-pools/{id}/model-rules |
 | 代理 | GET/POST /proxies；PATCH /proxies/{id}；POST /proxies/{id}/test（服务端固定探测目标） |
 | 出口策略 | GET/POST /egress-policies |
 | 预算 | GET/POST /budget-policies；GET /budget-periods；GET /ledger |
-| 价格 | GET /prices/versions；POST /prices/sync；POST /prices/overrides |
+| 价格 | GET /prices/versions；GET /prices/active/models；POST /prices/sync；POST /prices/overrides |
 | 审核 | GET /audit/rules；PATCH /audit/rules/{rule_id}（生成新版本）；POST /audit/rules/validate（仅本地匹配）；GET /audit/events；POST /audit/events/{id}/review |
 | 系统 | GET /status；GET /dashboard?range=24h\|7d；GET /events?since=<RFC3339>；GET /search?q=<2–80 字符>&types=user,key,account,pool；GET /admin-events |
 | 个人概览 | GET /me/overview（当前成员的订阅、Key、最近使用时间和近 7 日已记账成本；不返回账号、代理或出口信息） |
@@ -70,3 +70,19 @@
 - 审核规则修改生成新版本行，历史保留；恢复默认=由种子逻辑重新补入。
 - 复核接口只记录结论或创建带 TTL 的精确例外，从不重放请求。
 - 仪表盘和事件流均为有界聚合/增量读取，不能替代账本明细；全局搜索仅支持前缀匹配，并且不会返回任何凭据字段。
+
+### 模型能力与精细计价
+
+- `POST /accounts/{id}/model-capabilities`：`public_model` 是对客户暴露的模型名，`upstream_model` 是实际转发名；`status` 可为 `active|disabled`。一个账号一旦配置了任意能力行，就只会处理明确启用的模型。`DELETE` 使用 `?model=<public_model>`。
+- `POST /account-pools/{id}/model-rules`：为账号池逐模型启停；未配置规则的池保持兼容模式。`DELETE` 使用同样的 `?model=`。
+- 创建套餐或套餐版本时可带 `model_pricing` 数组。每一项至少给出 `input_per_mtok`、`cached_input_per_mtok`、`output_per_mtok` 或 `rate_multiplier` 之一；未给出的字段继承冻结的价格目录。模型规则的倍率会替代套餐默认倍率。
+- 请求会冻结实际使用的上游模型、套餐版本和价格来源。账本同时保存目录基础成本 `base_cost` 与套餐模型规则后的 `pricing_base_cost`，因此后续目录或套餐变更不会重写历史结算。
+
+### 已反代上游（CPA / Sub2API 等）
+
+创建上游账号时可将 `provider` 设为 `openai_compatible`，并同时提供：
+
+- `upstream_base_url`：中转的 `/v1` 基地址或完整 `/responses` 地址，例如 `http://cpa.internal:8317/v1`；
+- `access_token`：该中转的 Bearer API Key（加密保存，不在列表或审计事件中回显）。
+
+此类账号和 Codex OAuth 账号一样可加入账号池、设定权重/优先级和出口策略。请求会发送到该账号专属端点的 `/responses`，只携带该账号的 Bearer Key；不会把 ChatGPT OAuth 专用的 `chatgpt-account-id` 头发送给中转。兼容中转须支持 OpenAI Responses 的 SSE 事件，并在终态 `response.completed` 或 `response.failed` 中返回标准 `usage`，否则本项目会按未知结果保护性冻结该账号与对应结算。

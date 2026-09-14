@@ -96,6 +96,41 @@ func (p *ModelPrice) EffectiveRateMultiplier() decimal.Decimal {
 	return decimal.NewFromInt(1)
 }
 
+// ResolveEffectivePrice overlays an immutable plan-version's model rule on a
+// frozen catalog price. Model-level multipliers replace (rather than multiply)
+// the plan default so a special price remains stable if plan defaults change.
+// The returned source is safe to persist in request audit metadata.
+func ResolveEffectivePrice(ctx context.Context, q RowQuerier, planVersionID, model string, catalog *ModelPrice, defaultMultiplier decimal.Decimal) (*ModelPrice, string, error) {
+	if catalog == nil {
+		return nil, "", ErrNoPrice
+	}
+	effective := catalog.WithRateMultiplier(defaultMultiplier)
+	if planVersionID == "" {
+		return effective, "catalog", nil
+	}
+	var input, cached, output, multiplier decimal.NullDecimal
+	err := q.QueryRow(ctx, `SELECT input_per_mtok,cached_input_per_mtok,output_per_mtok,rate_multiplier FROM plan_model_pricing WHERE plan_version_id=$1 AND model=$2`, planVersionID, model).Scan(&input, &cached, &output, &multiplier)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return effective, "catalog", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if input.Valid {
+		effective.InputPerMTok = input.Decimal
+	}
+	if cached.Valid {
+		effective.CachedInputPerMTok = cached.Decimal
+	}
+	if output.Valid {
+		effective.OutputPerMTok = output.Decimal
+	}
+	if multiplier.Valid {
+		effective.RateMultiplier = &multiplier.Decimal
+	}
+	return effective, "plan_model_rule", nil
+}
+
 func dec(n int64) decimal.Decimal { return decimal.NewFromInt(n) }
 
 // EstimateTokens is the conservative byte-based input bound (D-002):

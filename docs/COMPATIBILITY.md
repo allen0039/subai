@@ -10,6 +10,7 @@
 | POST /v1/responses（非流式字段解析） | mock_only | tests/integration TestHappyPathSettlesLedger | 合成上游 SSE |
 | /v1/responses SSE 流式透传 | mock_only | 同上（event passthrough 断言） | 真实上游事件 schema 待 P0-01 |
 | /v1/responses usage 捕获与结算 | mock_only | 同上（账本 0.000682 精确断言） | 真实 usage 字段名待 P0-01 |
+| CPA / Sub2API 等 OpenAI-compatible Responses 中转 | mock_only | internal/gateway TestDispatchOpenAICompatibleRelay | 可按账号设置 `/v1` 端点与独立 Bearer Key；真实中转联调待补录 |
 | previous_response_id | unsupported（严格拒绝） | internal/audit TestExtractResponsesUnsupportedHistory | §6.1；网关不可见上下文 |
 | item_reference（服务端历史） | unsupported | extract.go | 同上 |
 | 工具定义/调用参数/工具输出提取 | mock_only | TestExtractResponsesFullCoverage | 受限深度 JSON 字符串提取 |

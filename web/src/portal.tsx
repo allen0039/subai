@@ -9,7 +9,7 @@ const Empty: React.FC<{text: string}> = ({text}) => <div className="empty-state"
 const SubscriptionCard: React.FC<{ sub: any }> = ({ sub }) => <div className="subscription-card">
   <div><span className="eyebrow">订阅版本 {sub.plan_version}</span><h3>{sub.plan_name}</h3></div><Badge value={sub.status} domain="subscription"/>
   {[['每日额度',sub.daily_limit_usd],['每周额度',sub.weekly_limit_usd],['每月额度',sub.monthly_limit_usd]].map(([title,value]) => <div className="quota-line" key={String(title)}><span>{title}</span><b>{money(value)}</b></div>)}
-  <small>到期：{dateTime(sub.expires_at, "无到期限制")} · 计费倍率：× {sub.rate_multiplier || "1"} · 并发上限：{sub.concurrency_limit} · 可创建密钥数：{sub.max_keys}</small>
+  <small>到期：{dateTime(sub.expires_at, "无到期限制")} · 计费倍率：× {sub.rate_multiplier || "1"} · 套餐共享并发：{sub.concurrency_limit} · 可创建密钥数：{Number(sub.max_keys) > 0 ? sub.max_keys : "不限"}</small>
 </div>;
 
 export const MyOverview: React.FC = () => {
@@ -37,7 +37,7 @@ export const MyKeys: React.FC = () => {
   const create = async () => { try { const result = await api.post<any>("/api/admin/me/keys", {...form, concurrency_limit:Number(form.concurrency_limit), expires_at:form.expires_at ? new Date(form.expires_at).toISOString() : undefined, allowed_models:form.allowed_models.split(",").map(value => value.trim()).filter(Boolean)}); setShow(false); setFlash(`接口密钥已创建，请立即保存：${result.key}`); load(); } catch (e) { setError(errorText(e)); } };
   const update = async (key: any, status: string) => { try { await api.patch(`/api/admin/me/keys/${key.id}`, {status,version:key.version}); load(); } catch (e) { setError(errorText(e)); } };
   const revoke = async (key: any) => { if (!confirm(`撤销接口密钥“${key.name}”后无法恢复，确认继续吗？`)) return; try { await api.post(`/api/admin/me/keys/${key.id}/revoke`); load(); } catch (e) { setError(errorText(e)); } };
-  return <div className="portal"><div className="page-head"><h2>我的接口密钥</h2><div className="grow"/><button className="btn primary" disabled={!subs.length} onClick={() => { setForm({subscription_id:subs[0]?.id ?? "",name:"",concurrency_limit:"1",expires_at:"",allowed_models:""}); setShow(true); }}>创建接口密钥</button><button className="btn" onClick={load}>刷新</button></div>{!subs.length && <div className="error">没有可用于创建接口密钥的有效订阅。</div>}{flash && <div className="flash" onClick={() => setFlash("")}>{flash}</div>}{error && <div className="error">{error}</div>}<table className="tbl"><thead><tr><th>名称</th><th>所属套餐</th><th>前缀</th><th>状态</th><th>并发上限</th><th>到期时间</th><th/></tr></thead><tbody>{keys.map(key => <tr key={key.id}><td>{key.name}</td><td>{key.plan_name}</td><td><code>{key.public_prefix}</code></td><td><Badge value={key.status}/></td><td>{key.concurrency_limit}</td><td>{dateTime(key.expires_at,"无到期限制")}</td><td className="actions">{key.status !== "revoked" && <><button className="btn small" onClick={() => update(key,key.status === "active" ? "paused" : "active")}>{key.status === "active" ? "暂停" : "恢复"}</button><button className="btn small danger" onClick={() => revoke(key)}>撤销</button></>}</td></tr>)}</tbody></table>{show && <Modal title="创建接口密钥" onClose={() => setShow(false)} onSubmit={create}><label className="field"><span className="field-label">使用的套餐订阅</span><select value={form.subscription_id} onChange={e => setForm({...form,subscription_id:e.target.value})}>{subs.map(sub => <option key={sub.id} value={sub.id}>{sub.plan_name} · 到期 {dateTime(sub.expires_at,"无到期限制")}</option>)}</select></label><label className="field"><span className="field-label">接口密钥名称</span><input value={form.name} onChange={e => setForm({...form,name:e.target.value})} required/></label><label className="field"><span className="field-label">并发上限</span><input type="number" min="1" value={form.concurrency_limit} onChange={e => setForm({...form,concurrency_limit:e.target.value})}/></label><label className="field"><span className="field-label">到期时间（可选）</span><input type="datetime-local" value={form.expires_at} onChange={e => setForm({...form,expires_at:e.target.value})}/></label><label className="field"><span className="field-label">允许模型（可选，使用逗号分隔）</span><input value={form.allowed_models} onChange={e => setForm({...form,allowed_models:e.target.value})}/></label></Modal>}</div>;
+  return <div className="portal"><div className="page-head"><h2>我的接口密钥</h2><div className="grow"/><button className="btn primary" disabled={!subs.length} onClick={() => { setForm({subscription_id:subs[0]?.id ?? "",name:"",concurrency_limit:"1",expires_at:"",allowed_models:""}); setShow(true); }}>创建接口密钥</button><button className="btn" onClick={load}>刷新</button></div>{!subs.length && <div className="error">没有可用于创建接口密钥的有效订阅。</div>}{flash && <div className="flash" onClick={() => setFlash("")}>{flash}</div>}{error && <div className="error">{error}</div>}<table className="tbl"><thead><tr><th>名称</th><th>所属套餐</th><th>前缀</th><th>状态</th><th>单个密钥并发</th><th>到期时间</th><th/></tr></thead><tbody>{keys.map(key => <tr key={key.id}><td>{key.name}</td><td>{key.plan_name}</td><td><code>{key.public_prefix}</code></td><td><Badge value={key.status}/></td><td>{key.concurrency_limit}</td><td>{dateTime(key.expires_at,"无到期限制")}</td><td className="actions">{key.status !== "revoked" && <><button className="btn small" onClick={() => update(key,key.status === "active" ? "paused" : "active")}>{key.status === "active" ? "暂停" : "恢复"}</button><button className="btn small danger" onClick={() => revoke(key)}>撤销</button></>}</td></tr>)}</tbody></table>{show && <Modal title="创建接口密钥" onClose={() => setShow(false)} onSubmit={create}><label className="field"><span className="field-label">使用的套餐订阅</span><select value={form.subscription_id} onChange={e => setForm({...form,subscription_id:e.target.value})}>{subs.map(sub => <option key={sub.id} value={sub.id}>{sub.plan_name} · 到期 {dateTime(sub.expires_at,"无到期限制")}</option>)}</select></label><label className="field"><span className="field-label">接口密钥名称</span><input value={form.name} onChange={e => setForm({...form,name:e.target.value})} required/></label><label className="field"><span className="field-label">单个密钥并发</span><input type="number" min="1" value={form.concurrency_limit} onChange={e => setForm({...form,concurrency_limit:e.target.value})}/><small className="muted">该值不能超过所属套餐的共享并发。</small></label><label className="field"><span className="field-label">到期时间（可选）</span><input type="datetime-local" value={form.expires_at} onChange={e => setForm({...form,expires_at:e.target.value})}/></label><label className="field"><span className="field-label">允许模型（可选，使用逗号分隔）</span><input value={form.allowed_models} onChange={e => setForm({...form,allowed_models:e.target.value})}/></label></Modal>}</div>;
 };
 
 export const SecurityPage: React.FC = () => {
@@ -47,12 +47,81 @@ export const SecurityPage: React.FC = () => {
 };
 
 export const AdminPlans: React.FC = () => {
-  const [plans,setPlans] = useState<any[]>([]), [pools,setPools] = useState<any[]>([]), [error,setError] = useState(""), [show,setShow] = useState(false); const [form,setForm] = useState<any>({name:"",description:"",daily_limit_usd:"",weekly_limit_usd:"",monthly_limit_usd:"",rate_multiplier:"1",concurrency_limit:"1",max_keys:"1",default_validity_days:"30",allowed_models:"",pool_ids:[]});
-  const load = useCallback(async () => { try { const [planResult,poolResult] = await Promise.all([api.get<any>("/api/admin/plans"),api.get<any>("/api/admin/account-pools")]); setPlans(planResult.data ?? []); setPools(poolResult.data ?? []); } catch (e) { setError(errorText(e)); } }, []); useEffect(() => { load(); },[load]);
-  const create = async () => { try { await api.post("/api/admin/plans",{...form,concurrency_limit:Number(form.concurrency_limit),max_keys:Number(form.max_keys),default_validity_days:Number(form.default_validity_days),allowed_models:form.allowed_models.split(",").map((v:string) => v.trim()).filter(Boolean)}); setShow(false); load(); } catch (e) { setError(errorText(e)); } };
-  const publish = async (id:string) => { try { await api.post(`/api/admin/plans/${id}/publish`); load(); } catch (e) { setError(errorText(e)); } };
-  const reset = () => { setForm({name:"",description:"",daily_limit_usd:"",weekly_limit_usd:"",monthly_limit_usd:"",rate_multiplier:"1",concurrency_limit:"1",max_keys:"1",default_validity_days:"30",allowed_models:"",pool_ids:[]}); setShow(true); };
-  return <div className="portal"><div className="page-head"><h2>套餐管理</h2><div className="grow"/><button className="btn primary" onClick={reset}>创建套餐草稿</button><button className="btn" onClick={load}>刷新</button></div>{error && <div className="error">{error}</div>}<table className="tbl"><thead><tr><th>套餐</th><th>状态</th><th>额度（每日／每周／每月）</th><th>计费倍率</th><th>并发／接口密钥数</th><th>账号池</th><th/></tr></thead><tbody>{plans.map(plan => <tr key={plan.id}><td><b>{plan.name}</b><br/><small className="muted">版本 {plan.plan_version} · {plan.description}</small></td><td><Badge value={plan.status} domain="plan"/></td><td>{money(plan.daily_limit_usd)}／{money(plan.weekly_limit_usd)}／{money(plan.monthly_limit_usd)}</td><td>× {plan.rate_multiplier || "1"}</td><td>{plan.concurrency_limit}／{plan.max_keys}</td><td>{(plan.pools ?? []).map((pool:any) => pool.name).join("、") || "未配置"}</td><td className="actions">{plan.status === "draft" && <button className="btn small primary" onClick={() => publish(plan.id)}>发布</button>}</td></tr>)}</tbody></table>{show && <Modal title="创建套餐草稿" onClose={() => setShow(false)} onSubmit={create}><label className="field"><span className="field-label">套餐名称</span><input value={form.name} onChange={e => setForm({...form,name:e.target.value})} required/></label><label className="field"><span className="field-label">说明</span><textarea value={form.description} onChange={e => setForm({...form,description:e.target.value})}/></label><div className="form-grid">{[["daily_limit_usd","每日额度（美元）"],["weekly_limit_usd","每周额度（美元）"],["monthly_limit_usd","每月额度（美元）"]].map(([key,title]) => <label className="field" key={key}><span className="field-label">{title}</span><input value={form[key]} placeholder="留空表示不限" onChange={e => setForm({...form,[key]:e.target.value})}/></label>)}</div><label className="field"><span className="field-label">计费倍率</span><input type="number" min="0" step="0.01" value={form.rate_multiplier} onChange={e => setForm({...form,rate_multiplier:e.target.value})}/><small className="muted">模型目录价格乘以此倍率后，计入用户的套餐额度；不影响账号池容量。</small></label><div className="form-grid"><label className="field"><span className="field-label">并发上限</span><input type="number" value={form.concurrency_limit} onChange={e => setForm({...form,concurrency_limit:e.target.value})}/></label><label className="field"><span className="field-label">可创建接口密钥数</span><input type="number" value={form.max_keys} onChange={e => setForm({...form,max_keys:e.target.value})}/></label></div><label className="field"><span className="field-label">允许模型（使用逗号分隔，留空表示全部）</span><input value={form.allowed_models} onChange={e => setForm({...form,allowed_models:e.target.value})}/></label><span className="field-label">绑定账号池</span><div className="check-list">{pools.map(pool => <label key={pool.id}><input type="checkbox" checked={form.pool_ids.includes(pool.id)} onChange={e => setForm({...form,pool_ids:e.target.checked ? [...form.pool_ids,pool.id] : form.pool_ids.filter((id:string) => id !== pool.id)})}/>{pool.name}</label>)}</div></Modal>}</div>;
+  const emptyForm = {name:"",description:"",daily_limit_usd:"",weekly_limit_usd:"",monthly_limit_usd:"",rate_multiplier:"1",concurrency_limit:"1",max_keys:"",default_validity_days:"30",allowed_models:"",pool_ids:[],model_pricing:[]};
+  const [plans,setPlans] = useState<any[]>([]);
+  const [pools,setPools] = useState<any[]>([]);
+  const [error,setError] = useState("");
+  const [show,setShow] = useState(false);
+  const [editing,setEditing] = useState<any | null>(null);
+  const [form,setForm] = useState<any>(emptyForm);
+
+  const load = useCallback(async () => {
+    try {
+      const [planResult,poolResult] = await Promise.all([api.get<any>("/api/admin/plans"),api.get<any>("/api/admin/account-pools")]);
+      setPlans(planResult.data ?? []);
+      setPools(poolResult.data ?? []);
+      setError("");
+    } catch (e) { setError(errorText(e)); }
+  }, []);
+  useEffect(() => { load(); },[load]);
+
+  const payload = () => ({
+    ...form,
+    concurrency_limit:Number(form.concurrency_limit),
+    max_keys:form.max_keys === "" ? 0 : Number(form.max_keys),
+    default_validity_days:Number(form.default_validity_days),
+    allowed_models:String(form.allowed_models).split(",").map(value => value.trim()).filter(Boolean),
+  });
+  const save = async () => {
+    try {
+      if (editing) await api.post(`/api/admin/plans/${editing.id}/versions`,payload());
+      else await api.post("/api/admin/plans",payload());
+      setShow(false);
+      setEditing(null);
+      await load();
+    } catch (e) { setError(errorText(e)); }
+  };
+  const publish = async (id:string) => { try { await api.post(`/api/admin/plans/${id}/publish`); await load(); } catch (e) { setError(errorText(e)); } };
+  const openCreate = () => { setEditing(null); setForm({...emptyForm,pool_ids:[],model_pricing:[]}); setShow(true); };
+  const openEdit = (plan:any) => {
+    setEditing(plan);
+    setForm({
+      name:plan.name ?? "", description:plan.description ?? "",
+      daily_limit_usd:plan.daily_limit_usd ?? "", weekly_limit_usd:plan.weekly_limit_usd ?? "", monthly_limit_usd:plan.monthly_limit_usd ?? "",
+      rate_multiplier:plan.rate_multiplier || "1", concurrency_limit:String(plan.concurrency_limit || 1),
+      max_keys:Number(plan.max_keys) > 0 ? String(plan.max_keys) : "", default_validity_days:String(plan.default_validity_days || 30),
+      allowed_models:(plan.allowed_models ?? []).join(", "), pool_ids:(plan.pools ?? []).map((pool:any) => pool.id),
+      model_pricing:plan.model_pricing ?? [],
+    });
+    setShow(true);
+  };
+
+  return <div className="portal">
+    <div className="page-head"><h2>套餐管理</h2><div className="grow"/><button className="btn primary" onClick={openCreate}>创建套餐草稿</button><button className="btn" onClick={load}>刷新</button></div>
+    <p className="muted">套餐并发由同一订阅下的所有接口密钥共享；上游账号的承载能力请在“上游账号”中单独设置。</p>
+    {error && <div className="error">{error}</div>}
+    <table className="tbl"><thead><tr><th>套餐</th><th>状态</th><th>额度（每日／每周／每月）</th><th>计费倍率</th><th>套餐共享并发</th><th>接口密钥数量</th><th>账号池</th><th/></tr></thead><tbody>{plans.map(plan => <tr key={plan.id}>
+      <td><b>{plan.name}</b><br/><small className="muted">版本 {plan.plan_version} · {plan.description || "暂无说明"}</small></td>
+      <td><Badge value={plan.status} domain="plan"/></td>
+      <td>{money(plan.daily_limit_usd)}／{money(plan.weekly_limit_usd)}／{money(plan.monthly_limit_usd)}</td>
+      <td>× {plan.rate_multiplier || "1"}</td><td>{plan.concurrency_limit}</td><td>{Number(plan.max_keys) > 0 ? plan.max_keys : "不限"}</td>
+      <td>{(plan.pools ?? []).map((pool:any) => pool.name).join("、") || "未配置"}</td>
+      <td className="actions"><button className="btn small" onClick={() => openEdit(plan)}>编辑</button>{plan.status === "draft" && <button className="btn small primary" onClick={() => publish(plan.id)}>发布</button>}</td>
+    </tr>)}</tbody></table>
+    {show && <Modal className="plan-modal" title={editing ? `编辑套餐 · ${editing.name}` : "创建套餐草稿"} onClose={() => { setShow(false); setEditing(null); }} onSubmit={save} submitLabel={editing ? "保存新版本" : "创建草稿"}>
+      {editing && <div className="flash">保存后生成版本 {Number(editing.plan_version) + 1}；已有订阅继续使用原版本。</div>}
+      <label className="field"><span className="field-label">套餐名称</span><input value={form.name} onChange={e => setForm({...form,name:e.target.value})} required/></label>
+      <label className="field"><span className="field-label">说明</span><textarea value={form.description} onChange={e => setForm({...form,description:e.target.value})}/></label>
+      <div className="form-grid">{[["daily_limit_usd","每日额度（美元）"],["weekly_limit_usd","每周额度（美元）"],["monthly_limit_usd","每月额度（美元）"]].map(([key,title]) => <label className="field" key={key}><span className="field-label">{title}</span><input value={form[key]} placeholder="留空表示不限" onChange={e => setForm({...form,[key]:e.target.value})}/></label>)}</div>
+      <label className="field"><span className="field-label">计费倍率</span><input type="number" min="0" step="0.01" value={form.rate_multiplier} onChange={e => setForm({...form,rate_multiplier:e.target.value})}/><small className="muted">模型目录价格乘以此倍率后计入用户额度。</small></label>
+      <div className="form-grid">
+        <label className="field"><span className="field-label">套餐共享并发</span><input type="number" min="1" value={form.concurrency_limit} onChange={e => setForm({...form,concurrency_limit:e.target.value})}/><small className="muted">同一订阅下所有密钥合计可同时执行的请求数。</small></label>
+        <label className="field"><span className="field-label">可创建接口密钥数</span><input type="number" min="1" value={form.max_keys} placeholder="留空表示不限" onChange={e => setForm({...form,max_keys:e.target.value})}/><small className="muted">默认不限；填写后限制每个订阅可创建的密钥总数。</small></label>
+      </div>
+      <label className="field"><span className="field-label">允许模型（使用逗号分隔，留空表示全部）</span><input value={form.allowed_models} onChange={e => setForm({...form,allowed_models:e.target.value})}/></label>
+      <span className="field-label">绑定账号池</span><div className="check-list">{pools.map(pool => <label key={pool.id}><input type="checkbox" checked={form.pool_ids.includes(pool.id)} onChange={e => setForm({...form,pool_ids:e.target.checked ? [...form.pool_ids,pool.id] : form.pool_ids.filter((id:string) => id !== pool.id)})}/>{pool.name}</label>)}</div>
+    </Modal>}
+  </div>;
 };
 
 export const AdminSubscriptions: React.FC = () => {

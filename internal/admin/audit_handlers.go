@@ -241,6 +241,35 @@ func (s *Server) listPriceVersions(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, 200, map[string]any{"data": out})
 }
 
+// listActivePriceModels is the operator-facing catalog used when authoring
+// account capability and plan model-pricing rules. It deliberately exposes
+// rates, not any upstream credential or account association.
+func (s *Server) listActivePriceModels(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.DB.Pool.Query(r.Context(), `
+		SELECT mp.model,mp.input_per_mtok::text,mp.cached_input_per_mtok::text,mp.output_per_mtok::text,pv.id::text,pv.activated_at::text
+		FROM price_versions pv JOIN model_prices mp ON mp.price_version_id=pv.id
+		WHERE pv.status='active' ORDER BY mp.model`)
+	if err != nil {
+		s.writeErr(w, 500, err.Error())
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var model, input, cached, output, version, activated string
+		if err := rows.Scan(&model, &input, &cached, &output, &version, &activated); err != nil {
+			s.writeErr(w, 500, err.Error())
+			return
+		}
+		out = append(out, map[string]any{"model": model, "input_per_mtok": input, "cached_input_per_mtok": cached, "output_per_mtok": output, "price_version_id": version, "activated_at": activated})
+	}
+	if err := rows.Err(); err != nil {
+		s.writeErr(w, 500, err.Error())
+		return
+	}
+	s.writeJSON(w, 200, map[string]any{"data": out})
+}
+
 func (s *Server) syncPrices(w http.ResponseWriter, r *http.Request) {
 	if s.PriceSync == nil {
 		s.writeErr(w, http.StatusServiceUnavailable, "price sync is not configured")
@@ -632,8 +661,10 @@ func (s *Server) resolveUnknown(w http.ResponseWriter, r *http.Request, requestI
 	}
 	var model string
 	var frozenVersion *string
+	var planVersion *string
+	var frozenMultiplier string
 	if err := s.DB.Pool.QueryRow(r.Context(),
-		`SELECT model, price_version_id::text FROM requests WHERE id=$1`, requestID).Scan(&model, &frozenVersion); err != nil {
+		`SELECT model, price_version_id::text, plan_version_id::text, COALESCE(rate_multiplier::text,'1') FROM requests WHERE id=$1`, requestID).Scan(&model, &frozenVersion, &planVersion, &frozenMultiplier); err != nil {
 		s.writeErr(w, 404, "request not found")
 		return
 	}
@@ -641,14 +672,28 @@ func (s *Server) resolveUnknown(w http.ResponseWriter, r *http.Request, requestI
 		s.writeErr(w, 409, "request has no frozen price version; record evidence via a manual price override covering the original model before adjusting")
 		return
 	}
-	price, err := billing.ModelPriceFor(r.Context(), s.DB.Pool, *frozenVersion, model)
+	catalogPrice, err := billing.ModelPriceFor(r.Context(), s.DB.Pool, *frozenVersion, model)
 	if err != nil {
 		// Missing historical price must fail loudly, not silently reprice at
 		// today's table (review R2-03).
 		s.writeErr(w, 409, "frozen price version lacks the model's price; create a manual override for the original version scope and retry: "+err.Error())
 		return
 	}
-	result, err := billing.AdjustUnknown(r.Context(), s.DB.Pool, requestID, actorFrom(r), usage, price, *frozenVersion)
+	multiplier, err := decimal.NewFromString(frozenMultiplier)
+	if err != nil {
+		s.writeErr(w, 409, "request has an invalid frozen billing multiplier")
+		return
+	}
+	planVersionID := ""
+	if planVersion != nil {
+		planVersionID = *planVersion
+	}
+	price, _, err := billing.ResolveEffectivePrice(r.Context(), s.DB.Pool, planVersionID, model, catalogPrice, multiplier)
+	if err != nil {
+		s.writeErr(w, 409, "unable to resolve frozen plan model pricing: "+err.Error())
+		return
+	}
+	result, err := billing.AdjustUnknown(r.Context(), s.DB.Pool, requestID, actorFrom(r), usage, catalogPrice, price, *frozenVersion)
 	if err != nil {
 		s.writeErr(w, 409, err.Error())
 		return

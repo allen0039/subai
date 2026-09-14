@@ -183,6 +183,43 @@ func TestQuotaClientKeepsUsageCountWhenResetCreditDetailsFail(t *testing.T) {
 	}
 }
 
+func TestQuotaClientConsumesOneResetCredit(t *testing.T) {
+	var requestID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/consume" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q", got)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		requestID = body["redeem_request_id"]
+		_, _ = w.Write([]byte(`{"code":"ok","windows_reset":2,"credit":{"id":"must-not-leak"}}`))
+	}))
+	defer server.Close()
+	client := &QuotaClient{ResetConsumeURL: server.URL + "/consume"}
+	result, err := client.ConsumeResetCredit(context.Background(), server.Client(), QuotaCredentials{AccessToken: "token", AccountID: "account-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Code != "ok" || result.WindowsReset != 2 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if len(requestID) != 36 || requestID[14] != '4' {
+		t.Fatalf("redeem_request_id = %q, want UUID-v4", requestID)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "must-not-leak") {
+		t.Fatalf("result exposed upstream credit data: %s", raw)
+	}
+}
+
 func containsAny(value string, candidates ...string) bool {
 	for _, candidate := range candidates {
 		if strings.Contains(value, candidate) {

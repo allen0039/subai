@@ -68,7 +68,7 @@ const keysPage = () => (
       { name: "name", label: "名称" },
       { name: "public_prefix", label: "前缀" },
       statusCol,
-      { name: "concurrency_limit", label: "并发上限" },
+      { name: "concurrency_limit", label: "单个密钥并发" },
       { name: "client_id", label: "客户端" },
       { name: "created_at", label: "创建时间" },
     ]}
@@ -76,7 +76,7 @@ const keysPage = () => (
       { name: "member_id", label: "所属用户", kind: "select", optionsPath: "/api/admin/users", required: true },
       { name: "client_id", label: "关联客户端（可选）", kind: "select", optionsPath: "/api/admin/clients" },
       { name: "name", label: "名称", required: true },
-      { name: "concurrency_limit", label: "并发上限", kind: "number", default: 1 },
+      { name: "concurrency_limit", label: "单个密钥并发", kind: "number", min: 1, default: 1, help: "只限制这个接口密钥同时执行的请求数。" },
       { name: "allowed_models", label: "允许模型（逗号分隔，留空=全部）", help: "逗号分隔" },
     ]}
     editFields={[{ name: "status", label: "状态", kind: "select", options: ["active", "paused"] }]}
@@ -107,8 +107,10 @@ const accountsPage = () => (
     basePath="/api/admin/accounts"
     columns={[
       { name: "label", label: "标签" },
+      { name: "provider", label: "上游类型", render: (r) => r.provider === "openai_compatible" ? "兼容中转" : "Codex OAuth" },
+      { name: "upstream_base_url", label: "兼容端点", render: (r) => r.provider === "openai_compatible" ? r.upstream_base_url : "—" },
       { name: "state", label: "状态", render: (r) => <Badge value={r.state} domain="account" /> },
-      { name: "concurrency_limit", label: "并发上限" },
+      { name: "concurrency_limit", label: "账号并发容量" },
       { name: "priority", label: "优先级" },
       { name: "proxy_name", label: "当前代理" },
       { name: "quota", label: "官方额度", render: (r) => <QuotaSummary row={r} /> },
@@ -116,20 +118,24 @@ const accountsPage = () => (
     ]}
     createFields={[
       { name: "label", label: "标签", required: true },
-      { name: "access_token", label: "访问令牌", kind: "password", required: true, help: "加密保存，仅在创建时填写" },
-      { name: "refresh_token", label: "刷新令牌（可选）", kind: "password" },
-      { name: "account_id", label: "上游账号标识（可选）" },
-      { name: "concurrency_limit", label: "并发上限", kind: "number", default: 1 },
+      { name: "provider", label: "上游类型", kind: "select", default: "codex", options: [{ value: "codex", label: "Codex OAuth 直连" }, { value: "openai_compatible", label: "OpenAI 兼容中转（CPA / Sub2API）" }], help: "兼容中转会按其 /v1/responses 接口调用，并作为账号池的一个成员参与调度。" },
+      { name: "upstream_base_url", label: "兼容上游地址", required: true, placeholder: "http://cpa.example:8317/v1", visibleWhen: body => body.provider === "openai_compatible", help: "填写 /v1 基地址或完整的 /responses 地址；不填密钥到 URL 中。" },
+      { name: "access_token", label: "访问令牌 / 中转 API Key", kind: "password", required: true, help: "加密保存，仅在创建时填写；兼容中转通常填写 CPA 或 Sub2API 的 API Key。" },
+      { name: "refresh_token", label: "刷新令牌（可选）", kind: "password", visibleWhen: body => body.provider === "codex" },
+      { name: "account_id", label: "上游账号标识（可选）", visibleWhen: body => body.provider === "codex" },
+      { name: "concurrency_limit", label: "账号并发容量", kind: "number", min: 1, default: 1, help: "该上游账号可同时承载的请求数。调度会跳过已满账号，并优先选择当前负载较低的账号。" },
       { name: "egress_policy_id", label: "出口策略（可选）", kind: "select", optionsPath: "/api/admin/egress-policies" },
     ]}
     editFields={[
       { name: "label", label: "标签", required: true },
       { name: "proxy_id", label: "切换代理", kind: "select", optionsPath: "/api/admin/proxies", help: "不选择则保留当前出口策略；选择后使用该代理，故障即停止" },
       { name: "state", label: "状态", kind: "select", options: ["active", "paused"] },
-      { name: "concurrency_limit", label: "并发上限", kind: "number" },
+      { name: "concurrency_limit", label: "账号并发容量", kind: "number", min: 1, help: "只限制这个上游账号；不会改变套餐或单个接口密钥的并发限制。" },
       { name: "priority", label: "优先级", kind: "number" },
+      { name: "upstream_base_url", label: "兼容上游地址", visibleWhen: body => body.provider === "openai_compatible", help: "/v1 基地址或完整 /responses 地址。" },
+      { name: "api_key", label: "轮换中转 API Key", kind: "password", visibleWhen: body => body.provider === "openai_compatible", help: "留空不修改；密钥不会再次显示。" },
     ]}
-    rowActions={(row, reload) => <><QuotaRefreshAction row={row} reload={reload} /><QuotaActions row={row} reload={reload} /><HoldActions row={row} reload={reload} /></>}
+    rowActions={(row, reload) => <>{row.provider === "codex" && <><QuotaRefreshAction row={row} reload={reload} /><QuotaActions row={row} reload={reload} /></>}<HoldActions row={row} reload={reload} /></>}
     notice={<OAuthStarter />}
     filters={[
       { name: "q", label: "账号", placeholder: "按标签前缀搜索" },
@@ -142,6 +148,7 @@ type QuotaWindow = { used_percent?: number; limit_window_seconds?: number; reset
 type ResetCredit = { expires_at?: string };
 type ResetCreditInfo = { known: boolean; available: number; credits: { expiresAt: Date; expired: boolean }[] };
 type QuotaRefreshResponse = { quota: any; quota_fetched_at?: string; quota_error?: string };
+type ResetCreditConsumeResponse = { consumed: boolean; windows_reset?: number; quota?: any; quota_fetched_at?: string; warning?: string };
 
 function quotaWindows(quota: any): QuotaWindow[] {
   return [quota?.rate_limit?.primary_window, quota?.rate_limit?.secondary_window].filter(Boolean);
@@ -263,12 +270,17 @@ const QuotaActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload 
   const [error, setError] = useState("");
   const [displayRow, setDisplayRow] = useState(row);
   const [needsReload, setNeedsReload] = useState(false);
+  const [consumeOpen, setConsumeOpen] = useState(false);
+  const [consuming, setConsuming] = useState(false);
+  const [consumeError, setConsumeError] = useState("");
+  const [consumeWarning, setConsumeWarning] = useState("");
   const refresh = async () => {
     setRefreshing(true); setError("");
     try {
       const result = await api.post<QuotaRefreshResponse>(`/api/admin/accounts/${row.id}/quota/refresh`);
       setDisplayRow((current: any) => ({...current, ...result, quota: result.quota}));
       setNeedsReload(true);
+      setConsumeWarning("");
     }
     catch (e) { setError(errorText(e)); }
     finally { setRefreshing(false); }
@@ -278,8 +290,26 @@ const QuotaActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload 
     if (needsReload) reload();
   };
   const resetCards = resetCreditInfo(displayRow.quota);
+  const consume = async () => {
+    setConsuming(true);
+    setConsumeError("");
+    try {
+      const result = await api.post<ResetCreditConsumeResponse>(`/api/admin/accounts/${row.id}/quota/reset-credits/consume`);
+      if (!result.consumed) throw new Error("官方未确认重置卡已使用，请刷新后重试。");
+      if (result.quota) {
+        setDisplayRow((current: any) => ({...current, quota: result.quota, quota_fetched_at: result.quota_fetched_at ?? current.quota_fetched_at, quota_error: ""}));
+      }
+      setNeedsReload(true);
+      setConsumeWarning(result.warning ?? "");
+      setConsumeOpen(false);
+    } catch (e) {
+      setConsumeError(errorText(e));
+    } finally {
+      setConsuming(false);
+    }
+  };
   return <>
-    <button className="btn small" onClick={() => { setDisplayRow(row); setNeedsReload(false); setError(""); setOpen(true); }}>额度详情</button>
+    <button className="btn small" onClick={() => { setDisplayRow(row); setNeedsReload(false); setConsumeWarning(""); setError(""); setOpen(true); }}>额度详情</button>
     {open && <Modal className="quota-modal" title="官方账号额度" onClose={close} onSubmit={refresh} submitLabel={refreshing ? "正在同步…" : "刷新官方额度"} submitDisabled={refreshing}>
       <div className="quota-details">
         <section className="quota-account-head">
@@ -310,6 +340,11 @@ const QuotaActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload 
               {credit.expired && <b>已过期</b>}
             </div>)}
           </div>}
+          {resetCards.known && resetCards.available > 0 && !consumeWarning && <div className="quota-consume-action">
+            <span>每次使用 1 张，并立即恢复官方额度窗口。</span>
+            <button type="button" className="btn small danger" disabled={refreshing || consuming} onClick={() => { setConsumeError(""); setConsumeOpen(true); }}>使用 1 张重置卡</button>
+          </div>}
+          {consumeWarning && <p className="quota-consume-warning">{consumeWarning}</p>}
         </section>
         <section className="quota-sync-status">
           <div><span>数据更新时间</span><b>{dateTime(displayRow.quota_fetched_at, "尚未同步")}</b></div>
@@ -318,6 +353,13 @@ const QuotaActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload 
         {displayRow.quota_error && <div className="error">上次同步失败：{displayRow.quota_error}</div>}
         {error && <div className="error">{error}</div>}
         <p className="quota-note"><span aria-hidden="true">i</span>额度、重置卡和过期时间来自官方账号服务，订阅有效期仅在官方返回时显示。</p>
+      </div>
+    </Modal>}
+    {consumeOpen && <Modal className="quota-consume-modal" title="确认使用重置卡" onClose={() => setConsumeOpen(false)} onSubmit={consume} submitLabel={consuming ? "正在使用…" : "确认使用 1 张"} submitDisabled={consuming}>
+      <div className="quota-consume-confirm">
+        <p>将使用当前账号的一张官方额度重置卡。此操作会立即消耗该卡，无法撤销。</p>
+        <p>成功后系统会重新获取五小时、周额度和剩余重置卡信息。</p>
+        {consumeError && <div className="error" role="alert">{consumeError}</div>}
       </div>
     </Modal>}
   </>;
@@ -446,6 +488,7 @@ const groupsPage = () => (
     basePath="/api/admin/account-pools"
     columns={[
       { name: "name", label: "名称" },
+      { name: "description", label: "说明", render: (r) => r.description || "—" },
       { name: "strategy", label: "调度", render: (r) => <Badge value={r.strategy ?? "round_robin"} /> },
       statusCol,
       { name: "accounts", label: "账号", render: (r) => (r.accounts ?? []).join("、") || "—" },
@@ -454,6 +497,12 @@ const groupsPage = () => (
       { name: "name", label: "账号池名称", required: true },
       { name: "description", label: "说明", kind: "textarea" },
       { name: "strategy", label: "调度策略", kind: "select", options: ["round_robin", "weighted_round_robin", "priority_failover"], default: "round_robin" },
+    ]}
+    editFields={[
+      { name: "name", label: "账号池名称", required: true },
+      { name: "description", label: "说明", kind: "textarea" },
+      { name: "strategy", label: "调度策略", kind: "select", options: ["round_robin", "weighted_round_robin", "priority_failover"] },
+      { name: "status", label: "状态", kind: "select", options: ["active", "disabled"] },
     ]}
     notice={<GroupAddForm />}
     rowActions={(row, reload) => <GroupRowActions row={row} reload={reload} />}
@@ -492,6 +541,18 @@ const GroupRowActions: React.FC<{ row: any; reload: () => void }> = ({ row, relo
       >
         添加账号
       </button>
+      {(row.account_ids ?? []).map((id: string, index: number) => <button
+        key={id}
+        className="btn small"
+        title={`从账号池移除“${row.accounts?.[index] ?? "账号"}”`}
+        onClick={async () => {
+          if (!confirm(`确认从账号池“${row.name}”移除账号“${row.accounts?.[index] ?? "该账号"}”？`)) return;
+          try { await api.del(`/api/admin/account-pools/${row.id}/accounts/${id}`); reload(); }
+          catch (e) { setError(errorText(e)); }
+        }}
+      >
+        移除 {row.accounts?.[index] ?? "账号"}
+      </button>)}
       <button
         className="btn small danger"
         onClick={async () => {

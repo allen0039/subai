@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -32,7 +33,10 @@ type Route struct {
 
 type Account struct {
 	ID                string
+	Provider          string
 	Label             string
+	UpstreamBaseURL   string
+	UpstreamModel     string // mapped model for the selected request; never client-visible
 	State             string
 	ConcurrencyLimit  int
 	Priority          int
@@ -222,6 +226,17 @@ func (s *Scheduler) AcquireAccount(ctx context.Context, keyID string, keyLimit i
 
 // AcquireAccountWithSubscription adds a subscription-wide concurrency layer.
 func (s *Scheduler) AcquireAccountWithSubscription(ctx context.Context, keyID string, keyLimit int, subscriptionID string, subscriptionLimit int, stickyID string) (*Account, func(), error) {
+	return s.acquire(ctx, keyID, keyLimit, subscriptionID, subscriptionLimit, "", stickyID)
+}
+
+// AcquireModelRoute selects only accounts that can serve publicModel and
+// returns the mapped upstream model. Empty capability sets intentionally keep
+// legacy accounts compatible; a configured set is a strict allow-list.
+func (s *Scheduler) AcquireModelRoute(ctx context.Context, keyID string, keyLimit int, subscriptionID string, subscriptionLimit int, publicModel, stickyID string) (*Account, func(), error) {
+	return s.acquire(ctx, keyID, keyLimit, subscriptionID, subscriptionLimit, publicModel, stickyID)
+}
+
+func (s *Scheduler) acquire(ctx context.Context, keyID string, keyLimit int, subscriptionID string, subscriptionLimit int, publicModel, stickyID string) (*Account, func(), error) {
 	noop := func() {}
 	routes, err := s.RoutesFor(ctx, keyID)
 	if err != nil {
@@ -252,15 +267,35 @@ func (s *Scheduler) AcquireAccountWithSubscription(ctx context.Context, keyID st
 		switch r.TargetType {
 		case "account":
 			if a, err := s.loadAccount(ctx, r.TargetID, ""); err == nil && a.State == "active" {
+				if publicModel != "" {
+					upstreamModel, ok, serr := s.accountSupportsModel(ctx, a.ID, publicModel)
+					if serr != nil || !ok {
+						continue
+					}
+					a.UpstreamModel = upstreamModel
+				}
 				addAcct(a, tier)
 			}
 		case "group":
+			if publicModel != "" {
+				allowed, serr := s.groupAllowsModel(ctx, r.TargetID, publicModel)
+				if serr != nil || !allowed {
+					continue
+				}
+			}
 			list, err := s.groupAccounts(ctx, r.TargetID)
 			if err != nil {
 				continue
 			}
 			for _, a := range list {
 				a.GroupID = r.TargetID
+				if publicModel != "" {
+					upstreamModel, ok, serr := s.accountSupportsModel(ctx, a.ID, publicModel)
+					if serr != nil || !ok {
+						continue
+					}
+					a.UpstreamModel = upstreamModel
+				}
 				addAcct(a, tier)
 			}
 		}
@@ -340,6 +375,33 @@ func (s *Scheduler) AcquireAccountWithSubscription(ctx context.Context, keyID st
 	return nil, noop, ErrConcurrency
 }
 
+func (s *Scheduler) groupAllowsModel(ctx context.Context, groupID, publicModel string) (bool, error) {
+	var total, active int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE status='active') FROM account_group_model_rules WHERE group_id=$1 AND public_model=$2`, groupID, publicModel).Scan(&total, &active); err != nil {
+		return false, err
+	}
+	return total == 0 || active > 0, nil
+}
+
+func (s *Scheduler) accountSupportsModel(ctx context.Context, accountID, publicModel string) (string, bool, error) {
+	var total int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM account_model_capabilities WHERE account_id=$1`, accountID).Scan(&total); err != nil {
+		return "", false, err
+	}
+	if total == 0 {
+		return publicModel, true, nil // legacy account: preserve prior routing behaviour
+	}
+	var upstream string
+	err := s.pool.QueryRow(ctx, `SELECT upstream_model FROM account_model_capabilities WHERE account_id=$1 AND public_model=$2 AND status='active'`, accountID, publicModel).Scan(&upstream)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return upstream, true, nil
+}
+
 func (s *Scheduler) releaseFunc(keyID, subscriptionID, accountID string) func() {
 	return func() { s.slots.Release(keyID, subscriptionID, accountID) }
 }
@@ -354,10 +416,10 @@ func (s *Scheduler) rotate(keyID string) int {
 func (s *Scheduler) loadAccount(ctx context.Context, id, groupID string) (*Account, error) {
 	var a Account
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, label, state, concurrency_limit, priority, egress_policy_id, credential_version
+		SELECT id, provider, label, COALESCE(upstream_base_url,''), state, concurrency_limit, priority, egress_policy_id, credential_version
 		FROM accounts WHERE id=$1
 		AND NOT EXISTS (SELECT 1 FROM account_holds h WHERE h.account_id=accounts.id)`, id).
-		Scan(&a.ID, &a.Label, &a.State, &a.ConcurrencyLimit, &a.Priority, &a.EgressPolicyID, &a.CredentialVersion)
+		Scan(&a.ID, &a.Provider, &a.Label, &a.UpstreamBaseURL, &a.State, &a.ConcurrencyLimit, &a.Priority, &a.EgressPolicyID, &a.CredentialVersion)
 	if err != nil {
 		return nil, fmt.Errorf("account %s: %w", id, err)
 	}
@@ -367,7 +429,7 @@ func (s *Scheduler) loadAccount(ctx context.Context, id, groupID string) (*Accou
 
 func (s *Scheduler) groupAccounts(ctx context.Context, groupID string) ([]*Account, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT a.id, a.label, a.state, a.concurrency_limit, a.priority, a.egress_policy_id, a.credential_version,
+		SELECT a.id, a.provider, a.label, COALESCE(a.upstream_base_url,''), a.state, a.concurrency_limit, a.priority, a.egress_policy_id, a.credential_version,
 		       g.strategy, m.weight, m.priority
 		FROM account_group_members m JOIN accounts a ON a.id = m.account_id
 		JOIN account_groups g ON g.id = m.group_id
@@ -383,7 +445,7 @@ func (s *Scheduler) groupAccounts(ctx context.Context, groupID string) ([]*Accou
 		var a Account
 		var strategy string
 		var memberWeight, memberPriority int
-		if err := rows.Scan(&a.ID, &a.Label, &a.State, &a.ConcurrencyLimit, &a.Priority, &a.EgressPolicyID, &a.CredentialVersion, &strategy, &memberWeight, &memberPriority); err != nil {
+		if err := rows.Scan(&a.ID, &a.Provider, &a.Label, &a.UpstreamBaseURL, &a.State, &a.ConcurrencyLimit, &a.Priority, &a.EgressPolicyID, &a.CredentialVersion, &strategy, &memberWeight, &memberPriority); err != nil {
 			return nil, err
 		}
 		// Pool-local settings deliberately override global account priority: an

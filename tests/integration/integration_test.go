@@ -713,7 +713,7 @@ func TestSettleIdempotent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, err := billing.Settle(ctx, e.db.Pool, reqID, 0, keyID, accountID, usage, price, pvID)
+			_, err := billing.Settle(ctx, e.db.Pool, reqID, 0, keyID, accountID, usage, price, price, pvID)
 			errs[i] = err
 		}(i)
 	}

@@ -153,6 +153,10 @@ func (s *Server) Routes() http.Handler {
 			return
 		}
 		switch {
+		case len(parts) == 2 && parts[1] == "model-rules":
+			s.groupModelRules(w, r, parts[0])
+		case len(parts) == 1 && r.Method == http.MethodPatch:
+			s.patchGroup(w, r, parts[0])
 		case len(parts) == 1 && r.Method == http.MethodDelete:
 			s.deleteGroup(w, r, parts[0])
 		case len(parts) == 2 && parts[1] == "accounts" && r.Method == http.MethodPost:
@@ -347,6 +351,28 @@ func (s *Server) Routes() http.Handler {
 	}))
 	mux.Handle("/api/admin/accounts/", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		id := pathID(r, "/api/admin/accounts/")
+		if strings.HasSuffix(id, "/model-capabilities") {
+			base := strings.TrimSuffix(id, "/model-capabilities")
+			if !resourceUUID.MatchString(base) {
+				s.writeErr(w, 400, "invalid account ID")
+				return
+			}
+			s.accountModelCapabilities(w, r, base)
+			return
+		}
+		if strings.HasSuffix(id, "/quota/reset-credits/consume") {
+			base := strings.TrimSuffix(id, "/quota/reset-credits/consume")
+			if !resourceUUID.MatchString(base) {
+				s.writeErr(w, 400, "账号标识无效")
+				return
+			}
+			if r.Method != http.MethodPost {
+				s.writeErr(w, 405, "请求方式不支持")
+				return
+			}
+			s.consumeAccountResetCredit(w, r, base)
+			return
+		}
 		if strings.HasSuffix(id, "/quota/refresh") {
 			base := strings.TrimSuffix(id, "/quota/refresh")
 			if !resourceUUID.MatchString(base) {
@@ -447,6 +473,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/ledger", s.RequireAdmin(getOnly(s.listLedger)))
 
 	mux.Handle("/api/admin/prices/versions", s.RequireAdmin(getOnly(s.listPriceVersions)))
+	mux.Handle("/api/admin/prices/active/models", s.RequireAdmin(getOnly(s.listActivePriceModels)))
 	mux.Handle("/api/admin/prices/sync", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			s.writeErr(w, 405, "method not allowed")

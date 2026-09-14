@@ -90,6 +90,13 @@ func (s *StateTracker) SetRouting(ctx context.Context, reqID, accountID, groupID
 	return err
 }
 
+// SetModelResolution freezes the outbound model mapping and plan-version sales
+// rule used for this request; clients only ever see requests.model.
+func (s *StateTracker) SetModelResolution(ctx context.Context, reqID, upstreamModel, planVersionID, pricingSource string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE requests SET upstream_model=$2,plan_version_id=NULLIF($3,'')::uuid,model_pricing_source=$4,updated_at=now() WHERE id=$1`, reqID, upstreamModel, planVersionID, pricingSource)
+	return err
+}
+
 // SetTerminalOutcome persists the terminal outcome type before settlement
 // (P1-02). Recovery reads this field to distinguish completed vs failed.
 func (s *StateTracker) SetTerminalOutcome(ctx context.Context, reqID, outcome string) error {

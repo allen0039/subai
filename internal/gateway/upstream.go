@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -27,9 +28,18 @@ type Credentials struct {
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 }
 
-func (u *Upstream) Dispatch(ctx context.Context, client *http.Client, prof egress.Profile, creds Credentials, payload []byte) (*http.Response, error) {
-	url := strings.TrimRight(u.BaseURL, "/") + "/responses"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+// Dispatch supports native Codex OAuth accounts as well as OpenAI-compatible
+// relays. CPA and Sub2API expose the latter through a bearer-authenticated
+// /v1/responses endpoint.
+func (u *Upstream) Dispatch(ctx context.Context, client *http.Client, prof egress.Profile, provider, baseURL string, creds Credentials, payload []byte) (*http.Response, error) {
+	if provider != "codex" && provider != "openai_compatible" {
+		return nil, fmt.Errorf("unsupported upstream provider %q", provider)
+	}
+	endpoint := responsesEndpoint(baseURL)
+	if endpoint == "" {
+		return nil, fmt.Errorf("upstream base URL is empty")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +47,7 @@ func (u *Upstream) Dispatch(ctx context.Context, client *http.Client, prof egres
 	req.Header.Set("Accept", "text/event-stream")
 	// Credential injection happens only here (§17.1); never copied from inbound.
 	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
-	if creds.AccountID != "" {
+	if provider == "codex" && creds.AccountID != "" {
 		req.Header.Set("chatgpt-account-id", creds.AccountID)
 	}
 	resp, err := client.Do(req)
@@ -45,6 +55,14 @@ func (u *Upstream) Dispatch(ctx context.Context, client *http.Client, prof egres
 		return nil, err
 	}
 	return resp, nil
+}
+
+func responsesEndpoint(baseURL string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" || strings.HasSuffix(baseURL, "/responses") {
+		return baseURL
+	}
+	return baseURL + "/responses"
 }
 
 // SSEFrame is one parsed server-sent event from upstream (parsed in sse.go).

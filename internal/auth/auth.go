@@ -30,6 +30,7 @@ type KeyInfo struct {
 	MemberStatus      string
 	ClientID          *string
 	SubscriptionID    string
+	PlanVersionID     string
 	SubscriptionLimit int
 	RateMultiplier    string
 	Name              string
@@ -109,19 +110,20 @@ func (s *Service) lookupKeyDB(ctx context.Context, hash string) (*KeyInfo, error
 		       k.user_subscription_id::text, us.status, us.starts_at, us.expires_at,
 		       COALESCE(us.concurrency_override,pv.concurrency_limit),
 		       COALESCE(us.allowed_models_override,pv.allowed_models),
+		       us.plan_version_id::text,
 		       COALESCE(pv.rate_multiplier,1)::text
 		FROM api_keys k JOIN members m ON m.id = k.member_id
 		LEFT JOIN user_subscriptions us ON us.id=k.user_subscription_id AND us.member_id=k.member_id
 		LEFT JOIN plan_versions pv ON pv.id=us.plan_version_id
 		WHERE k.key_hash = $1`, hash)
 	var k KeyInfo
-	var clientID, policyID, subscriptionID, subscriptionStatus *string
+	var clientID, policyID, subscriptionID, subscriptionStatus, planVersionID *string
 	var subscriptionStarts, subscriptionExpires *time.Time
 	var subscriptionLimit *int
 	var allowedModels, subscriptionModels []string
 	if err := row.Scan(&k.ID, &k.MemberID, &clientID, &k.Name, &k.Status, &k.ExpiresAt,
 		&k.ConcurrencyLimit, &allowedModels, &policyID, &k.MemberStatus,
-		&subscriptionID, &subscriptionStatus, &subscriptionStarts, &subscriptionExpires, &subscriptionLimit, &subscriptionModels, &k.RateMultiplier); err != nil {
+		&subscriptionID, &subscriptionStatus, &subscriptionStarts, &subscriptionExpires, &subscriptionLimit, &subscriptionModels, &planVersionID, &k.RateMultiplier); err != nil {
 		return nil, ErrInvalidKey
 	}
 	k.ClientID = clientID
@@ -134,6 +136,9 @@ func (s *Service) lookupKeyDB(ctx context.Context, hash string) (*KeyInfo, error
 			return nil, ErrMemberDenied
 		}
 		k.SubscriptionID = *subscriptionID
+		if planVersionID != nil {
+			k.PlanVersionID = *planVersionID
+		}
 		k.SubscriptionLimit = *subscriptionLimit
 		if k.ConcurrencyLimit > *subscriptionLimit {
 			k.ConcurrencyLimit = *subscriptionLimit

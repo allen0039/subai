@@ -18,18 +18,30 @@ import (
 // planInput is intentionally string-based for money: JSON floating-point
 // values must never enter the accounting configuration path.
 type planInput struct {
-	Name                string   `json:"name"`
-	Description         string   `json:"description"`
-	DailyLimitUSD       *string  `json:"daily_limit_usd"`
-	WeeklyLimitUSD      *string  `json:"weekly_limit_usd"`
-	MonthlyLimitUSD     *string  `json:"monthly_limit_usd"`
-	RateMultiplier      *string  `json:"rate_multiplier"`
-	ConcurrencyLimit    int      `json:"concurrency_limit"`
-	MaxKeys             int      `json:"max_keys"`
-	AllowedModels       []string `json:"allowed_models"`
-	DefaultValidityDays int      `json:"default_validity_days"`
-	Timezone            string   `json:"timezone"`
-	PoolIDs             []string `json:"pool_ids"`
+	Name                string              `json:"name"`
+	Description         string              `json:"description"`
+	DailyLimitUSD       *string             `json:"daily_limit_usd"`
+	WeeklyLimitUSD      *string             `json:"weekly_limit_usd"`
+	MonthlyLimitUSD     *string             `json:"monthly_limit_usd"`
+	RateMultiplier      *string             `json:"rate_multiplier"`
+	ConcurrencyLimit    int                 `json:"concurrency_limit"`
+	MaxKeys             int                 `json:"max_keys"`
+	AllowedModels       []string            `json:"allowed_models"`
+	DefaultValidityDays int                 `json:"default_validity_days"`
+	Timezone            string              `json:"timezone"`
+	PoolIDs             []string            `json:"pool_ids"`
+	ModelPricing        []modelPricingInput `json:"model_pricing"`
+}
+
+// modelPricingInput uses nullable string fields so omitted prices inherit the
+// active catalog price. At least one field must be supplied for each model.
+type modelPricingInput struct {
+	Model              string  `json:"model"`
+	InputPerMTok       *string `json:"input_per_mtok"`
+	CachedInputPerMTok *string `json:"cached_input_per_mtok"`
+	OutputPerMTok      *string `json:"output_per_mtok"`
+	RateMultiplier     *string `json:"rate_multiplier"`
+	Notes              string  `json:"notes"`
 }
 
 func moneyArg(v *string) (any, error) {
@@ -51,8 +63,8 @@ func normalizePlanInput(in *planInput) error {
 	if in.ConcurrencyLimit <= 0 {
 		in.ConcurrencyLimit = 1
 	}
-	if in.MaxKeys <= 0 {
-		in.MaxKeys = 1
+	if in.MaxKeys < 0 {
+		return fmt.Errorf("max_keys must be zero (unlimited) or a positive integer")
 	}
 	if in.DefaultValidityDays <= 0 {
 		in.DefaultValidityDays = 30
@@ -77,6 +89,55 @@ func normalizePlanInput(in *planInput) error {
 		return fmt.Errorf("rate_multiplier must be a non-negative decimal")
 	}
 	in.RateMultiplier = ptrString(multiplier.StringFixed(12))
+	for i := range in.ModelPricing {
+		if err := normalizeModelPricing(&in.ModelPricing[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizeModelPricing(in *modelPricingInput) error {
+	in.Model, in.Notes = strings.TrimSpace(in.Model), strings.TrimSpace(in.Notes)
+	if in.Model == "" || len(in.Model) > 200 {
+		return fmt.Errorf("model_pricing model required (max 200 characters)")
+	}
+	provided := false
+	for _, value := range []*string{in.InputPerMTok, in.CachedInputPerMTok, in.OutputPerMTok, in.RateMultiplier} {
+		if value == nil || strings.TrimSpace(*value) == "" {
+			continue
+		}
+		d, err := decimal.NewFromString(strings.TrimSpace(*value))
+		if err != nil || d.IsNegative() {
+			return fmt.Errorf("model_pricing values must be non-negative decimals")
+		}
+		*value = d.StringFixed(12)
+		provided = true
+	}
+	if !provided {
+		return fmt.Errorf("model_pricing requires at least one price or multiplier")
+	}
+	return nil
+}
+
+func nullableDecimalArg(value *string) any {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return nil
+	}
+	return *value
+}
+
+func savePlanModelPricing(r *http.Request, tx pgx.Tx, versionID string, rules []modelPricingInput) error {
+	seen := map[string]bool{}
+	for _, rule := range rules {
+		if seen[rule.Model] {
+			return fmt.Errorf("duplicate model_pricing model")
+		}
+		seen[rule.Model] = true
+		if _, err := tx.Exec(r.Context(), `INSERT INTO plan_model_pricing(plan_version_id,model,input_per_mtok,cached_input_per_mtok,output_per_mtok,rate_multiplier,notes) VALUES($1,$2,$3,$4,$5,$6,$7)`, versionID, rule.Model, nullableDecimalArg(rule.InputPerMTok), nullableDecimalArg(rule.CachedInputPerMTok), nullableDecimalArg(rule.OutputPerMTok), nullableDecimalArg(rule.RateMultiplier), rule.Notes); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -109,9 +170,34 @@ func (s *Server) listPlans(w http.ResponseWriter, r *http.Request) {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
-		out = append(out, map[string]any{"id": id, "name": name, "description": desc, "status": status, "current_version_id": versionID, "version": planRowVersion, "plan_version": planVersion, "created_at": created, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "rate_multiplier": rateMultiplier, "concurrency_limit": concurrency, "max_keys": maxKeys, "allowed_models": models, "default_validity_days": validity, "timezone": tz, "pools": pools})
+		modelPricing, err := s.planModelPricing(r, versionID)
+		if err != nil {
+			s.writeErr(w, 500, err.Error())
+			return
+		}
+		out = append(out, map[string]any{"id": id, "name": name, "description": desc, "status": status, "current_version_id": versionID, "version": planRowVersion, "plan_version": planVersion, "created_at": created, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "rate_multiplier": rateMultiplier, "concurrency_limit": concurrency, "max_keys": maxKeys, "allowed_models": models, "default_validity_days": validity, "timezone": tz, "pools": pools, "model_pricing": modelPricing})
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})
+}
+
+func (s *Server) planModelPricing(r *http.Request, versionID string) ([]map[string]any, error) {
+	if versionID == "" {
+		return []map[string]any{}, nil
+	}
+	rows, err := s.DB.Pool.Query(r.Context(), `SELECT model,COALESCE(input_per_mtok::text,''),COALESCE(cached_input_per_mtok::text,''),COALESCE(output_per_mtok::text,''),COALESCE(rate_multiplier::text,''),notes FROM plan_model_pricing WHERE plan_version_id=$1 ORDER BY model`, versionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var model, input, cached, output, multiplier, notes string
+		if err := rows.Scan(&model, &input, &cached, &output, &multiplier, &notes); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{"model": model, "input_per_mtok": input, "cached_input_per_mtok": cached, "output_per_mtok": output, "rate_multiplier": multiplier, "notes": notes})
+	}
+	return out, rows.Err()
 }
 
 func (s *Server) poolSummaries(r *http.Request, versionID string) ([]map[string]any, error) {
@@ -179,6 +265,10 @@ func (s *Server) createPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bindPools(r, tx, versionID, in.PoolIDs); err != nil {
+		s.writeErr(w, 400, err.Error())
+		return
+	}
+	if err := savePlanModelPricing(r, tx, versionID, in.ModelPricing); err != nil {
 		s.writeErr(w, 400, err.Error())
 		return
 	}
@@ -272,7 +362,11 @@ func (s *Server) createPlanVersion(w http.ResponseWriter, r *http.Request, planI
 		s.writeErr(w, 400, err.Error())
 		return
 	}
-	if _, err := tx.Exec(r.Context(), `UPDATE plans SET current_version_id=$2,version=version+1,updated_at=now() WHERE id=$1`, planID, versionID); err != nil {
+	if err := savePlanModelPricing(r, tx, versionID, in.ModelPricing); err != nil {
+		s.writeErr(w, 400, err.Error())
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `UPDATE plans SET name=$2,description=$3,current_version_id=$4,version=version+1,updated_at=now() WHERE id=$1`, planID, in.Name, in.Description, versionID); err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
 	}
@@ -281,6 +375,8 @@ func (s *Server) createPlanVersion(w http.ResponseWriter, r *http.Request, planI
 		return
 	}
 	s.notifyMutation()
+	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "plan.version.create", "plan", planID,
+		storage.SanitizeForAdminEvent(map[string]any{"version_number": n}), "")
 	s.writeJSON(w, 201, map[string]any{"id": versionID, "version_number": n})
 }
 
@@ -626,7 +722,7 @@ func (s *Server) createOwnKey(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, 500, err.Error())
 		return
 	}
-	if count >= sub.MaxKeys {
+	if sub.MaxKeys > 0 && count >= sub.MaxKeys {
 		s.writeErr(w, 409, "subscription key limit reached")
 		return
 	}

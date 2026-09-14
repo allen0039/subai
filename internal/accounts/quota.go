@@ -3,6 +3,8 @@ package accounts
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 const (
 	DefaultUsageURL        = "https://chatgpt.com/backend-api/wham/usage"
 	DefaultResetCreditsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	DefaultResetConsumeURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
 	DefaultAccountsURL     = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
 	DefaultSubscriptionURL = "https://chatgpt.com/backend-api/subscriptions"
 )
@@ -57,6 +60,7 @@ type QuotaSnapshot struct {
 type QuotaClient struct {
 	UsageURL        string
 	ResetCreditsURL string
+	ResetConsumeURL string
 	AccountsURL     string
 	SubscriptionURL string
 }
@@ -67,7 +71,7 @@ type QuotaCredentials struct {
 }
 
 func NewQuotaClient() *QuotaClient {
-	return &QuotaClient{UsageURL: DefaultUsageURL, ResetCreditsURL: DefaultResetCreditsURL, AccountsURL: DefaultAccountsURL, SubscriptionURL: DefaultSubscriptionURL}
+	return &QuotaClient{UsageURL: DefaultUsageURL, ResetCreditsURL: DefaultResetCreditsURL, ResetConsumeURL: DefaultResetConsumeURL, AccountsURL: DefaultAccountsURL, SubscriptionURL: DefaultSubscriptionURL}
 }
 
 // Fetch reads the official Codex limit windows first. Account and subscription
@@ -124,6 +128,37 @@ func (q *QuotaClient) Fetch(ctx context.Context, client *http.Client, creds Quot
 		}
 	}
 	return snapshot, nil
+}
+
+// ResetCreditResult contains only the safe confirmation metadata returned by
+// the official consume operation. A card ID is deliberately never retained.
+type ResetCreditResult struct {
+	Code         string `json:"code,omitempty"`
+	WindowsReset int    `json:"windows_reset,omitempty"`
+}
+
+// ConsumeResetCredit consumes one official reset card. Callers must not retry
+// this method after a transport error: the upstream may have accepted the
+// request even when its response was lost.
+func (q *QuotaClient) ConsumeResetCredit(ctx context.Context, client *http.Client, creds QuotaCredentials) (*ResetCreditResult, error) {
+	if client == nil || strings.TrimSpace(creds.AccessToken) == "" {
+		return nil, errors.New("账号访问令牌不可用")
+	}
+	if strings.TrimSpace(creds.AccountID) == "" {
+		return nil, errors.New("账号缺少上游账号标识，请重新授权")
+	}
+	if strings.TrimSpace(q.ResetConsumeURL) == "" {
+		return nil, errors.New("重置卡服务尚未配置")
+	}
+	redeemRequestID, err := newRedeemRequestID()
+	if err != nil {
+		return nil, errors.New("生成重置卡请求标识失败")
+	}
+	var result ResetCreditResult
+	if err := q.postJSON(ctx, client, q.ResetConsumeURL, creds, map[string]string{"redeem_request_id": redeemRequestID}, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 type resetCreditDetails struct {
@@ -218,7 +253,19 @@ func parseResetCreditDetails(body []byte) (resetCreditDetails, error) {
 }
 
 func (q *QuotaClient) getJSON(ctx context.Context, client *http.Client, endpoint string, creds QuotaCredentials, dst any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	return q.requestJSON(ctx, client, http.MethodGet, endpoint, creds, nil, dst)
+}
+
+func (q *QuotaClient) postJSON(ctx context.Context, client *http.Client, endpoint string, creds QuotaCredentials, body any, dst any) error {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return q.requestJSON(ctx, client, http.MethodPost, endpoint, creds, bytes.NewReader(encoded), dst)
+}
+
+func (q *QuotaClient) requestJSON(ctx context.Context, client *http.Client, method, endpoint string, creds QuotaCredentials, body io.Reader, dst any) error {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return err
 	}
@@ -228,6 +275,9 @@ func (q *QuotaClient) getJSON(ctx context.Context, client *http.Client, endpoint
 	req.Header.Set("oai-language", "zh-CN")
 	req.Header.Set("originator", "Codex Desktop")
 	req.Header.Set("Accept", "application/json")
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Origin", "https://chatgpt.com")
 	req.Header.Set("Referer", "https://chatgpt.com/")
 	req.Header.Set("sec-fetch-site", "none")
@@ -247,6 +297,17 @@ func (q *QuotaClient) getJSON(ctx context.Context, client *http.Client, endpoint
 		return errors.New("官方账号服务返回了无法识别的数据")
 	}
 	return nil
+}
+
+func newRedeemRequestID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	v := hex.EncodeToString(b)
+	return v[0:8] + "-" + v[8:12] + "-" + v[12:16] + "-" + v[16:20] + "-" + v[20:], nil
 }
 
 type accountInfo struct {
