@@ -474,6 +474,14 @@ func (s *Server) Routes() http.Handler {
 
 	mux.Handle("/api/admin/prices/versions", s.RequireAdmin(getOnly(s.listPriceVersions)))
 	mux.Handle("/api/admin/prices/active/models", s.RequireAdmin(getOnly(s.listActivePriceModels)))
+	mux.Handle("/api/admin/models/candidates", s.RequireAdmin(getOnly(s.listAccountModelCandidates)))
+	mux.Handle("/api/admin/models/sync", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			s.writeErr(w, 405, "method not allowed")
+			return
+		}
+		s.syncAccountModels(w, r)
+	}))
 	mux.Handle("/api/admin/prices/sync", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			s.writeErr(w, 405, "method not allowed")

@@ -62,21 +62,26 @@ export const AdminPlans: React.FC = () => {
     if (value === null || value === undefined || value === "") return fallback;
     return fixedDecimal(value, fallback);
   };
-  const loadCatalog = useCallback(async () => {
-    const result = await api.get<any>("/api/admin/prices/active/models");
+  const loadCatalog = useCallback(async (poolIDs: string[]) => {
+    if (!poolIDs.length) { setCatalogModels([]); return; }
+    const query = new URLSearchParams({pool_ids:poolIDs.join(",")});
+    const result = await api.get<any>(`/api/admin/models/candidates?${query}`);
     setCatalogModels((result.data ?? []).filter((item: any) => String(item.model ?? "").trim()));
   }, []);
 
   const load = useCallback(async () => {
     try {
-      const [planResult,poolResult,modelResult] = await Promise.all([api.get<any>("/api/admin/plans"),api.get<any>("/api/admin/account-pools"),api.get<any>("/api/admin/prices/active/models")]);
+      const [planResult,poolResult] = await Promise.all([api.get<any>("/api/admin/plans"),api.get<any>("/api/admin/account-pools")]);
       setPlans(planResult.data ?? []);
       setPools(poolResult.data ?? []);
-      setCatalogModels((modelResult.data ?? []).filter((item: any) => String(item.model ?? "").trim()));
       setError("");
     } catch (e) { setError(errorText(e)); }
   }, []);
   useEffect(() => { load(); },[load]);
+  useEffect(() => {
+    if (!show) return;
+    loadCatalog(form.pool_ids).catch(e => setError(errorText(e)));
+  }, [show, form.pool_ids.join(","), loadCatalog]);
 
   const payload = () => {
     const {restrict_models, ...body} = form;
@@ -107,7 +112,7 @@ export const AdminPlans: React.FC = () => {
       daily_limit_usd:decimalInput(plan.daily_limit_usd), weekly_limit_usd:decimalInput(plan.weekly_limit_usd), monthly_limit_usd:decimalInput(plan.monthly_limit_usd),
       rate_multiplier:decimalInput(plan.rate_multiplier, "1.00"), concurrency_limit:String(plan.concurrency_limit || 1),
       max_keys:Number(plan.max_keys) > 0 ? String(plan.max_keys) : "", default_validity_days:String(plan.default_validity_days || 30),
-      allowed_models:plan.allowed_models ?? [], restrict_models:(plan.allowed_models ?? []).length > 0, pool_ids:(plan.pools ?? []).map((pool:any) => pool.id),
+      allowed_models:(plan.allowed_models ?? []).filter((model:string) => model.toLowerCase().startsWith("gpt-")), restrict_models:(plan.allowed_models ?? []).length > 0, pool_ids:(plan.pools ?? []).map((pool:any) => pool.id),
       model_pricing:plan.model_pricing ?? [],
     });
     setShow(true);
@@ -120,7 +125,7 @@ export const AdminPlans: React.FC = () => {
   const toggleModel = (model:string, checked:boolean) => setForm({...form,allowed_models:checked ? Array.from(new Set([...form.allowed_models,model])) : form.allowed_models.filter((item:string) => item !== model)});
   const syncCatalog = async () => {
     setCatalogBusy(true);
-    try { await api.post("/api/admin/prices/sync"); await loadCatalog(); setError(""); }
+    try { await api.post("/api/admin/models/sync", {pool_ids:form.pool_ids}); await loadCatalog(form.pool_ids); setError(""); }
     catch (e) { setError(errorText(e)); }
     finally { setCatalogBusy(false); }
   };
@@ -148,10 +153,10 @@ export const AdminPlans: React.FC = () => {
         <label className="field"><span className="field-label">可创建接口密钥数</span><input type="number" min="1" value={form.max_keys} placeholder="留空表示不限" onChange={e => setForm({...form,max_keys:e.target.value})}/><small className="muted">默认不限；填写后限制每个订阅可创建的密钥总数。</small></label>
       </div>
       <section className="model-selector" aria-label="套餐可用模型">
-        <div className="model-selector-head"><div><span className="field-label">可用模型</span><small className="muted">模型目录会在打开页面时自动读取；套餐保存的是勾选结果。</small></div><label className="model-toggle"><input type="checkbox" checked={form.restrict_models} onChange={e => setForm({...form,restrict_models:e.target.checked})}/><span>仅允许勾选的模型</span></label></div>
-        {form.restrict_models ? <><div className="model-toolbar"><input aria-label="筛选模型" placeholder="搜索模型名称" value={modelQuery} onChange={e => setModelQuery(e.target.value)}/><span className="muted small">已选 {form.allowed_models.length} 个</span><button type="button" className="btn small" onClick={selectAllVisible} disabled={!modelChoices.length}>全选当前结果</button><button type="button" className="btn small" onClick={() => setForm({...form,allowed_models:[]})} disabled={!form.allowed_models.length}>清空选择</button><button type="button" className="btn small" onClick={syncCatalog} disabled={catalogBusy}>{catalogBusy ? "正在同步目录" : "同步模型目录"}</button></div>
-          <div className="model-check-list">{modelChoices.length ? modelChoices.map((item:any) => { const model = String(item.model); return <label key={model} className={item.unavailable ? "model-missing" : ""}><input type="checkbox" checked={selectedModels.has(model)} onChange={e => toggleModel(model,e.target.checked)}/><span>{model}</span>{item.unavailable ? <small>原有配置，当前目录未找到</small> : <small>输入 {fixedDecimal(item.input_per_mtok, "—")}／输出 {fixedDecimal(item.output_per_mtok, "—")} 美元/百万词元</small>}</label>; }) : <div className="empty-state">暂无可选模型。请先同步并启用价格版本，再回到这里选择模型。</div>}</div>
-        </> : <div className="model-all-note">当前套餐允许模型目录中的全部模型；启用限制后再勾选需要开放的模型。</div>}
+        <div className="model-selector-head"><div><span className="field-label">可用模型</span><small className="muted">只读取已绑定 Codex 账号实际返回的 GPT 模型，不使用计费目录作为候选项。</small></div><label className="model-toggle"><input type="checkbox" checked={form.restrict_models} onChange={e => setForm({...form,restrict_models:e.target.checked})}/><span>仅允许勾选的模型</span></label></div>
+        {form.restrict_models ? <><div className="model-toolbar"><input aria-label="筛选模型" placeholder="搜索模型名称" value={modelQuery} onChange={e => setModelQuery(e.target.value)}/><span className="muted small">已选 {form.allowed_models.length} 个</span><button type="button" className="btn small" onClick={selectAllVisible} disabled={!modelChoices.length}>全选当前结果</button><button type="button" className="btn small" onClick={() => setForm({...form,allowed_models:[]})} disabled={!form.allowed_models.length}>清空选择</button><button type="button" className="btn small" onClick={syncCatalog} disabled={catalogBusy || !form.pool_ids.length}>{catalogBusy ? "正在读取上游模型" : "同步上游模型"}</button></div>
+          <div className="model-check-list">{modelChoices.length ? modelChoices.map((item:any) => { const model = String(item.model); return <label key={model} className={item.unavailable ? "model-missing" : ""}><input type="checkbox" checked={selectedModels.has(model)} onChange={e => toggleModel(model,e.target.checked)}/><span>{model}</span>{item.unavailable ? <small>原有配置，当前账号未返回</small> : <small>由 {item.account_count} 个已启用账号支持</small>}</label>; }) : <div className="empty-state">请先绑定账号池，然后点击“同步上游模型”读取该池中 Codex 账号实际支持的 GPT 模型。</div>}</div>
+        </> : <div className="model-all-note">当前套餐允许已绑定 Codex 账号实际支持的全部 GPT 模型；启用限制后再勾选需要开放的模型。</div>}
       </section>
       <span className="field-label">绑定账号池</span><div className="check-list">{pools.map(pool => <label key={pool.id}><input type="checkbox" checked={form.pool_ids.includes(pool.id)} onChange={e => setForm({...form,pool_ids:e.target.checked ? [...form.pool_ids,pool.id] : form.pool_ids.filter((id:string) => id !== pool.id)})}/>{pool.name}</label>)}</div>
     </Modal>}

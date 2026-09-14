@@ -30,6 +30,7 @@ type Server struct {
 	Auth      *auth.Service
 	OAuth     *accounts.Manager
 	Quota     *accounts.QuotaClient
+	Models    *accounts.ModelClient
 	Egress    *egress.Resolver
 	Rules     *audit.Engine // shared compiled ruleset for local validation
 	Reloader  func()        // called after config-changing writes; reloads rules/routes caches

@@ -199,7 +199,7 @@ func main() {
 	}
 
 	adminSrv := &admin.Server{
-		DB: db, Auth: authSvc, OAuth: oauth, Quota: accounts.NewQuotaClient(), Egress: egressResolver, Rules: engine,
+		DB: db, Auth: authSvc, OAuth: oauth, Quota: accounts.NewQuotaClient(), Models: accounts.NewModelClient(), Egress: egressResolver, Rules: engine,
 		Reloader:  reload,
 		Ready:     ready, // same gate as the data plane (review P1-2)
 		PriceSync: syncPrices,
