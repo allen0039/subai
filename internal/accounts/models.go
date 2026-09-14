@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 // DefaultCodexModelsURL is the model manifest used by the official Codex
@@ -18,6 +20,50 @@ const DefaultCodexModelsURL = "https://chatgpt.com/backend-api/codex/models"
 
 type ModelClient struct {
 	CodexModelsURL string
+	versionMu      sync.Mutex
+	version        string
+	versionChecked time.Time
+}
+
+// Follow stable Codex releases, as Sub2API does: the manifest is negotiated
+// by client version. Never attach account credentials to release discovery.
+func (c *ModelClient) clientVersion(ctx context.Context) string {
+	c.versionMu.Lock()
+	defer c.versionMu.Unlock()
+	if c.version == "" {
+		c.version = "0.154.0"
+	}
+	if c.CodexModelsURL != DefaultCodexModelsURL || time.Since(c.versionChecked) < 6*time.Hour {
+		return c.version
+	}
+	c.versionChecked = time.Now()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/openai/codex/releases/latest", nil)
+	if err != nil {
+		return c.version
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return c.version
+	}
+	defer resp.Body.Close()
+	var release struct {
+		Tag        string `json:"tag_name"`
+		Draft      bool   `json:"draft"`
+		Prerelease bool   `json:"prerelease"`
+	}
+	if resp.StatusCode != 200 || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&release) != nil || release.Draft || release.Prerelease {
+		return c.version
+	}
+	var major, minor, patch int
+	v := strings.TrimPrefix(release.Tag, "rust-v")
+	if strings.HasPrefix(release.Tag, "rust-v") {
+		if n, _ := fmt.Sscanf(v, "%d.%d.%d", &major, &minor, &patch); n == 3 && v == fmt.Sprintf("%d.%d.%d", major, minor, patch) && major == 0 && minor >= 154 {
+			c.version = v
+		}
+	}
+	return c.version
 }
 
 func NewModelClient() *ModelClient { return &ModelClient{CodexModelsURL: DefaultCodexModelsURL} }
@@ -40,7 +86,7 @@ func (c *ModelClient) FetchCodexModels(ctx context.Context, client *http.Client,
 	}
 	applyCodexRequestHeaders(req, creds)
 	// The manifest requires version negotiation independently of OAuth.
-	const clientVersion = "0.146.0"
+	clientVersion := c.clientVersion(ctx)
 	query := req.URL.Query()
 	query.Set("client_version", clientVersion)
 	req.URL.RawQuery = query.Encode()

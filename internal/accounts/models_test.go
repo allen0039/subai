@@ -13,7 +13,7 @@ func TestModelClientFetchCodexModelsUsesManifestAndFiltersNonGPT(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer token" || r.Header.Get("chatgpt-account-id") != "account" {
 			t.Fatal("missing Codex credentials")
 		}
-		if r.Header.Get("openai-beta") != "codex-1" || r.Header.Get("originator") != "codex-tui" || r.URL.Query().Get("client_version") != "0.146.0" || r.Header.Get("Version") != "0.146.0" {
+		if r.Header.Get("openai-beta") != "codex-1" || r.Header.Get("originator") != "codex-tui" || r.URL.Query().Get("client_version") != "0.154.0" || r.Header.Get("Version") != "0.154.0" {
 			t.Fatal("missing official Codex client context")
 		}
 		w.Header().Set("Content-Type", "application/json")
