@@ -2,8 +2,10 @@ package accounts
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -103,4 +105,89 @@ func TestQuotaClientRejectsUsageFailure(t *testing.T) {
 	if _, err := client.Fetch(context.Background(), server.Client(), QuotaCredentials{AccessToken: "bad", AccountID: "account-1"}); err == nil {
 		t.Fatal("expected usage request to fail")
 	}
+}
+
+func TestQuotaClientMergesResetCreditDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/usage":
+			_, _ = w.Write([]byte(`{"rate_limit":{"allowed":true},"rate_limit_reset_credits":{"available_count":1}}`))
+		case "/reset-credits":
+			_, _ = w.Write([]byte(`{
+				"availableCount": 2,
+				"items": [
+					{"id":"secret-credit-1","status":"available","resetType":"codex_rate_limits","expiresAt":"2026-10-01T00:00:00Z"},
+					{"credit_id":"secret-credit-2","status":"available","reset_type":"codex_rate_limits","expires_at":"2026-11-01T00:00:00Z"},
+					{"id":"other-credit","status":"available","reset_type":"other","expires_at":"2026-12-01T00:00:00Z"}
+				]
+			}`))
+		case "/accounts", "/subscription":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := &QuotaClient{
+		UsageURL:        server.URL + "/usage",
+		ResetCreditsURL: server.URL + "/reset-credits",
+		AccountsURL:     server.URL + "/accounts",
+		SubscriptionURL: server.URL + "/subscription",
+	}
+	got, err := client.Fetch(context.Background(), server.Client(), QuotaCredentials{AccessToken: "token", AccountID: "account-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RateLimitResetCredits == nil || got.RateLimitResetCredits.AvailableCount != 2 || len(got.RateLimitResetCredits.Credits) != 2 {
+		t.Fatalf("unexpected reset credits: %#v", got.RateLimitResetCredits)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) == "" || containsAny(string(raw), "secret-credit-1", "secret-credit-2", "other-credit") {
+		t.Fatalf("snapshot exposed an upstream credit identifier: %s", raw)
+	}
+}
+
+func TestQuotaClientKeepsUsageCountWhenResetCreditDetailsFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/usage":
+			_, _ = w.Write([]byte(`{"rate_limit":{"allowed":true},"rate_limit_reset_credits":{"available_count":3}}`))
+		case "/reset-credits":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case "/accounts", "/subscription":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := &QuotaClient{
+		UsageURL:        server.URL + "/usage",
+		ResetCreditsURL: server.URL + "/reset-credits",
+		AccountsURL:     server.URL + "/accounts",
+		SubscriptionURL: server.URL + "/subscription",
+	}
+	got, err := client.Fetch(context.Background(), server.Client(), QuotaCredentials{AccessToken: "token", AccountID: "account-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RateLimitResetCredits == nil || got.RateLimitResetCredits.AvailableCount != 3 {
+		t.Fatalf("usage reset-credit count was not retained: %#v", got.RateLimitResetCredits)
+	}
+}
+
+func containsAny(value string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(value, candidate) {
+			return true
+		}
+	}
+	return false
 }

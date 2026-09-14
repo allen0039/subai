@@ -129,7 +129,7 @@ const accountsPage = () => (
       { name: "concurrency_limit", label: "并发上限", kind: "number" },
       { name: "priority", label: "优先级", kind: "number" },
     ]}
-    rowActions={(row, reload) => <><QuotaActions row={row} reload={reload} /><HoldActions row={row} reload={reload} /></>}
+    rowActions={(row, reload) => <><QuotaRefreshAction row={row} reload={reload} /><QuotaActions row={row} reload={reload} /><HoldActions row={row} reload={reload} /></>}
     notice={<OAuthStarter />}
     filters={[
       { name: "q", label: "账号", placeholder: "按标签前缀搜索" },
@@ -139,6 +139,9 @@ const accountsPage = () => (
 );
 
 type QuotaWindow = { used_percent?: number; limit_window_seconds?: number; reset_after_seconds?: number; reset_at?: number };
+type ResetCredit = { expires_at?: string };
+type ResetCreditInfo = { known: boolean; available: number; credits: { expiresAt: Date; expired: boolean }[] };
+type QuotaRefreshResponse = { quota: any; quota_fetched_at?: string; quota_error?: string };
 
 function quotaWindows(quota: any): QuotaWindow[] {
   return [quota?.rate_limit?.primary_window, quota?.rate_limit?.secondary_window].filter(Boolean);
@@ -154,6 +157,25 @@ function findQuotaWindow(quota: any, kind: "five" | "week"): QuotaWindow | undef
 function remainingPercent(window?: QuotaWindow): number | null {
   if (!window || !Number.isFinite(Number(window.used_percent))) return null;
   return Math.max(0, Math.min(100, 100 - Number(window.used_percent)));
+}
+
+function resetCreditInfo(quota: any): ResetCreditInfo {
+  const value = quota?.rate_limit_reset_credits;
+  if (!value || !Number.isFinite(Number(value.available_count))) {
+    return { known: false, available: 0, credits: [] };
+  }
+  const now = Date.now();
+  const credits = (Array.isArray(value.credits) ? value.credits : [])
+    .map((credit: ResetCredit) => new Date(String(credit?.expires_at ?? "")))
+    .filter((expiresAt: Date) => Number.isFinite(expiresAt.getTime()))
+    .sort((a: Date, b: Date) => a.getTime() - b.getTime())
+    .map((expiresAt: Date) => ({ expiresAt, expired: expiresAt.getTime() <= now }));
+  const expiredCount = credits.filter((credit: { expired: boolean }) => credit.expired).length;
+  return {
+    known: true,
+    available: Math.max(0, Math.floor(Number(value.available_count)) - expiredCount),
+    credits,
+  };
 }
 
 function resetTime(window?: QuotaWindow): string {
@@ -209,44 +231,93 @@ const QuotaBar: React.FC<{ label: string; window?: QuotaWindow }> = ({ label: ti
 const QuotaSummary: React.FC<{ row: any }> = ({ row }) => {
   const five = remainingPercent(findQuotaWindow(row.quota, "five"));
   const week = remainingPercent(findQuotaWindow(row.quota, "week"));
+  const resetCards = resetCreditInfo(row.quota);
   if (!row.quota) return <span className="muted small">尚未同步</span>;
-  return <span className="quota-summary">五小时 {five == null ? "未知" : `${Math.round(five)}%`} · 每周 {week == null ? "未知" : `${Math.round(week)}%`}</span>;
+  return <span className="quota-summary">五小时 {five == null ? "未知" : `${Math.round(five)}%`} · 每周 {week == null ? "未知" : `${Math.round(week)}%`} · 重置卡 {resetCards.known ? resetCards.available : "未知"}</span>;
+};
+
+const QuotaRefreshAction: React.FC<{ row: any; reload: () => void }> = ({ row, reload }) => {
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const refresh = async () => {
+    setRefreshing(true);
+    setError("");
+    try {
+      await api.post(`/api/admin/accounts/${row.id}/quota/refresh`);
+      reload();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  return <span className="quota-refresh-action">
+    <button className="btn small" disabled={refreshing} onClick={refresh}>{refreshing ? "刷新中…" : "刷新额度"}</button>
+    {error && <span className="quota-action-error" role="alert" title={error}>{error}</span>}
+  </span>;
 };
 
 const QuotaActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload }) => {
   const [open, setOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [displayRow, setDisplayRow] = useState(row);
+  const [needsReload, setNeedsReload] = useState(false);
   const refresh = async () => {
     setRefreshing(true); setError("");
-    try { await api.post(`/api/admin/accounts/${row.id}/quota/refresh`); reload(); setOpen(false); }
+    try {
+      const result = await api.post<QuotaRefreshResponse>(`/api/admin/accounts/${row.id}/quota/refresh`);
+      setDisplayRow((current: any) => ({...current, ...result, quota: result.quota}));
+      setNeedsReload(true);
+    }
     catch (e) { setError(errorText(e)); }
     finally { setRefreshing(false); }
   };
+  const close = () => {
+    setOpen(false);
+    if (needsReload) reload();
+  };
+  const resetCards = resetCreditInfo(displayRow.quota);
   return <>
-    <button className="btn small" onClick={() => { setError(""); setOpen(true); }}>额度详情</button>
-    {open && <Modal className="quota-modal" title="官方账号额度" onClose={() => setOpen(false)} onSubmit={refresh} submitLabel={refreshing ? "正在同步…" : "刷新官方额度"} submitDisabled={refreshing}>
+    <button className="btn small" onClick={() => { setDisplayRow(row); setNeedsReload(false); setError(""); setOpen(true); }}>额度详情</button>
+    {open && <Modal className="quota-modal" title="官方账号额度" onClose={close} onSubmit={refresh} submitLabel={refreshing ? "正在同步…" : "刷新官方额度"} submitDisabled={refreshing}>
       <div className="quota-details">
         <section className="quota-account-head">
           <div className="quota-account-mark" aria-hidden="true">智</div>
-          <div className="quota-account-copy"><span>当前账号</span><b>{row.quota?.email || row.quota?.upstream_account_id || row.label}</b><small>{row.label}</small></div>
-          <span className="quota-plan">{planName(row.quota?.plan_type)}</span>
+          <div className="quota-account-copy"><span>当前账号</span><b>{displayRow.quota?.email || displayRow.quota?.upstream_account_id || displayRow.label}</b><small>{displayRow.label}</small></div>
+          <span className="quota-plan">{planName(displayRow.quota?.plan_type)}</span>
         </section>
         <section className="quota-overview">
-          <div><span>订阅有效期</span><b>{dateTime(row.quota?.subscription_expires_at, "官方暂未提供")}</b></div>
-          <div><span>额度状态</span><b className={row.quota ? "quota-online" : ""}>{row.quota ? "数据已同步" : "等待首次同步"}</b></div>
+          <div><span>订阅有效期</span><b>{dateTime(displayRow.quota?.subscription_expires_at, "官方暂未提供")}</b></div>
+          <div><span>额度状态</span><b className={displayRow.quota ? "quota-online" : ""}>{displayRow.quota ? "数据已同步" : "等待首次同步"}</b></div>
         </section>
         <section className="quota-window-grid">
-          <QuotaBar label="五小时额度" window={findQuotaWindow(row.quota, "five")} />
-          <QuotaBar label="周额度" window={findQuotaWindow(row.quota, "week")} />
+          <QuotaBar label="五小时额度" window={findQuotaWindow(displayRow.quota, "five")} />
+          <QuotaBar label="周额度" window={findQuotaWindow(displayRow.quota, "week")} />
+        </section>
+        <section className="quota-reset-cards">
+          <div className="quota-reset-card-head">
+            <div><span>额度重置卡</span><small>可用于恢复官方 Codex 额度</small></div>
+            <strong>{resetCards.known ? `${resetCards.available} 张` : "尚未获取"}</strong>
+          </div>
+          {!resetCards.known && <p>点击“刷新官方额度”获取重置卡数量与过期时间。</p>}
+          {resetCards.known && resetCards.available === 0 && resetCards.credits.length === 0 && <p>当前没有可用的额度重置卡。</p>}
+          {resetCards.known && resetCards.available > 0 && resetCards.credits.length === 0 && <p>官方暂未提供重置卡过期时间。</p>}
+          {!!resetCards.credits.length && <div className="quota-credit-list">
+            {resetCards.credits.map((credit, index) => <div key={`${credit.expiresAt.toISOString()}-${index}`}>
+              <span>第 {index + 1} 张{index === 0 && !credit.expired ? " · 最近过期" : ""}</span>
+              <time>{dateTime(credit.expiresAt.toISOString())}</time>
+              {credit.expired && <b>已过期</b>}
+            </div>)}
+          </div>}
         </section>
         <section className="quota-sync-status">
-          <div><span>数据更新时间</span><b>{dateTime(row.quota_fetched_at, "尚未同步")}</b></div>
-          <div><span>最近同步尝试</span><b>{dateTime(row.quota_last_attempt_at, "尚未尝试")}</b></div>
+          <div><span>数据更新时间</span><b>{dateTime(displayRow.quota_fetched_at, "尚未同步")}</b></div>
+          <div><span>最近同步尝试</span><b>{dateTime(displayRow.quota_last_attempt_at, "尚未尝试")}</b></div>
         </section>
-        {row.quota_error && <div className="error">上次同步失败：{row.quota_error}</div>}
+        {displayRow.quota_error && <div className="error">上次同步失败：{displayRow.quota_error}</div>}
         {error && <div className="error">{error}</div>}
-        <p className="quota-note"><span aria-hidden="true">i</span>额度和重置时间来自官方账号服务，订阅有效期仅在官方返回时显示。</p>
+        <p className="quota-note"><span aria-hidden="true">i</span>额度、重置卡和过期时间来自官方账号服务，订阅有效期仅在官方返回时显示。</p>
       </div>
     </Modal>}
   </>;

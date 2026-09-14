@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 const (
 	DefaultUsageURL        = "https://chatgpt.com/backend-api/wham/usage"
+	DefaultResetCreditsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 	DefaultAccountsURL     = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
 	DefaultSubscriptionURL = "https://chatgpt.com/backend-api/subscriptions"
 )
@@ -32,17 +34,29 @@ type RateLimit struct {
 	SecondaryWindow *QuotaWindow `json:"secondary_window,omitempty"`
 }
 
+// ResetCredit intentionally excludes upstream card identifiers and tokens.
+type ResetCredit struct {
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+type ResetCredits struct {
+	AvailableCount int           `json:"available_count"`
+	Credits        []ResetCredit `json:"credits,omitempty"`
+}
+
 type QuotaSnapshot struct {
-	UpstreamAccountID     string     `json:"upstream_account_id,omitempty"`
-	Email                 string     `json:"email,omitempty"`
-	PlanType              string     `json:"plan_type,omitempty"`
-	SubscriptionExpiresAt *time.Time `json:"subscription_expires_at,omitempty"`
-	RateLimit             *RateLimit `json:"rate_limit,omitempty"`
-	FetchedAt             time.Time  `json:"fetched_at"`
+	UpstreamAccountID     string        `json:"upstream_account_id,omitempty"`
+	Email                 string        `json:"email,omitempty"`
+	PlanType              string        `json:"plan_type,omitempty"`
+	SubscriptionExpiresAt *time.Time    `json:"subscription_expires_at,omitempty"`
+	RateLimit             *RateLimit    `json:"rate_limit,omitempty"`
+	RateLimitResetCredits *ResetCredits `json:"rate_limit_reset_credits,omitempty"`
+	FetchedAt             time.Time     `json:"fetched_at"`
 }
 
 type QuotaClient struct {
 	UsageURL        string
+	ResetCreditsURL string
 	AccountsURL     string
 	SubscriptionURL string
 }
@@ -53,7 +67,7 @@ type QuotaCredentials struct {
 }
 
 func NewQuotaClient() *QuotaClient {
-	return &QuotaClient{UsageURL: DefaultUsageURL, AccountsURL: DefaultAccountsURL, SubscriptionURL: DefaultSubscriptionURL}
+	return &QuotaClient{UsageURL: DefaultUsageURL, ResetCreditsURL: DefaultResetCreditsURL, AccountsURL: DefaultAccountsURL, SubscriptionURL: DefaultSubscriptionURL}
 }
 
 // Fetch reads the official Codex limit windows first. Account and subscription
@@ -67,20 +81,35 @@ func (q *QuotaClient) Fetch(ctx context.Context, client *http.Client, creds Quot
 		return nil, errors.New("账号缺少上游账号标识，请重新授权")
 	}
 	var usage struct {
-		AccountID string     `json:"account_id"`
-		Email     string     `json:"email"`
-		PlanType  string     `json:"plan_type"`
-		RateLimit *RateLimit `json:"rate_limit"`
+		AccountID             string        `json:"account_id"`
+		Email                 string        `json:"email"`
+		PlanType              string        `json:"plan_type"`
+		RateLimit             *RateLimit    `json:"rate_limit"`
+		RateLimitResetCredits *ResetCredits `json:"rate_limit_reset_credits"`
 	}
 	if err := q.getJSON(ctx, client, q.UsageURL, creds, &usage); err != nil {
 		return nil, err
 	}
 	snapshot := &QuotaSnapshot{
-		UpstreamAccountID: firstNonEmpty(usage.AccountID, creds.AccountID),
-		Email:             usage.Email,
-		PlanType:          usage.PlanType,
-		RateLimit:         usage.RateLimit,
-		FetchedAt:         time.Now().UTC(),
+		UpstreamAccountID:     firstNonEmpty(usage.AccountID, creds.AccountID),
+		Email:                 usage.Email,
+		PlanType:              usage.PlanType,
+		RateLimit:             usage.RateLimit,
+		RateLimitResetCredits: usage.RateLimitResetCredits,
+		FetchedAt:             time.Now().UTC(),
+	}
+	if details, err := q.fetchResetCredits(ctx, client, creds); err == nil && details != nil {
+		if snapshot.RateLimitResetCredits == nil {
+			snapshot.RateLimitResetCredits = &ResetCredits{}
+		}
+		if details.AvailableCount != nil {
+			snapshot.RateLimitResetCredits.AvailableCount = *details.AvailableCount
+		} else if details.CreditListPresent {
+			snapshot.RateLimitResetCredits.AvailableCount = details.AvailableCreditCount
+		}
+		if details.CreditListPresent {
+			snapshot.RateLimitResetCredits.Credits = details.Credits
+		}
 	}
 	if info, err := q.fetchAccountInfo(ctx, client, creds); err == nil && info != nil {
 		snapshot.UpstreamAccountID = firstNonEmpty(info.AccountID, snapshot.UpstreamAccountID)
@@ -95,6 +124,97 @@ func (q *QuotaClient) Fetch(ctx context.Context, client *http.Client, creds Quot
 		}
 	}
 	return snapshot, nil
+}
+
+type resetCreditDetails struct {
+	AvailableCount       *int
+	AvailableCreditCount int
+	CreditListPresent    bool
+	Credits              []ResetCredit
+}
+
+type resetCreditPayload struct {
+	ExpiresAt      string `json:"expires_at"`
+	ExpiresAtCamel string `json:"expiresAt"`
+	ResetType      string `json:"reset_type"`
+	ResetTypeCamel string `json:"resetType"`
+	Status         string `json:"status"`
+}
+
+func (q *QuotaClient) fetchResetCredits(ctx context.Context, client *http.Client, creds QuotaCredentials) (*resetCreditDetails, error) {
+	if strings.TrimSpace(q.ResetCreditsURL) == "" {
+		return nil, nil
+	}
+	var raw json.RawMessage
+	if err := q.getJSON(ctx, client, q.ResetCreditsURL, creds, &raw); err != nil {
+		return nil, err
+	}
+	details, err := parseResetCreditDetails(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &details, nil
+}
+
+func parseResetCreditDetails(body []byte) (resetCreditDetails, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return resetCreditDetails{}, nil
+	}
+	var count *int
+	var creditsRaw json.RawMessage
+	listPresent := false
+	if trimmed[0] == '[' {
+		creditsRaw = trimmed
+		listPresent = true
+	} else {
+		var envelope struct {
+			AvailableCount      *int             `json:"available_count"`
+			AvailableCountCamel *int             `json:"availableCount"`
+			Credits             *json.RawMessage `json:"credits"`
+			ResetCredits        *json.RawMessage `json:"rate_limit_reset_credits"`
+			Items               *json.RawMessage `json:"items"`
+			Data                *json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(trimmed, &envelope); err != nil {
+			return resetCreditDetails{}, err
+		}
+		count = envelope.AvailableCount
+		if count == nil {
+			count = envelope.AvailableCountCamel
+		}
+		for _, candidate := range []*json.RawMessage{envelope.Credits, envelope.ResetCredits, envelope.Items, envelope.Data} {
+			if candidate != nil && len(bytes.TrimSpace(*candidate)) > 0 && !bytes.Equal(bytes.TrimSpace(*candidate), []byte("null")) {
+				creditsRaw = *candidate
+				listPresent = true
+				break
+			}
+		}
+	}
+	var rawCredits []*resetCreditPayload
+	if listPresent {
+		if err := json.Unmarshal(creditsRaw, &rawCredits); err != nil {
+			return resetCreditDetails{}, err
+		}
+	}
+	result := resetCreditDetails{AvailableCount: count, CreditListPresent: listPresent}
+	for _, raw := range rawCredits {
+		if raw == nil {
+			continue
+		}
+		resetType := firstNonEmpty(raw.ResetType, raw.ResetTypeCamel)
+		if resetType != "" && !strings.EqualFold(resetType, "codex_rate_limits") {
+			continue
+		}
+		if status := strings.TrimSpace(raw.Status); status != "" && !strings.EqualFold(status, "available") {
+			continue
+		}
+		result.AvailableCreditCount++
+		if expiresAt := firstNonEmpty(raw.ExpiresAt, raw.ExpiresAtCamel); expiresAt != "" {
+			result.Credits = append(result.Credits, ResetCredit{ExpiresAt: expiresAt})
+		}
+	}
+	return result, nil
 }
 
 func (q *QuotaClient) getJSON(ctx context.Context, client *http.Client, endpoint string, creds QuotaCredentials, dst any) error {
