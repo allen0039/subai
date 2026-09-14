@@ -59,7 +59,7 @@ CREATE INDEX service_group_model_routes_active_idx
 -- multi-pool versions deliberately keep legacy routing until split by admin.
 ALTER TABLE plan_versions ADD COLUMN IF NOT EXISTS service_group_id UUID REFERENCES account_groups(id);
 WITH one_group AS (
-    SELECT plan_version_id, min(pool_id) AS group_id
+    SELECT plan_version_id, min(pool_id::text)::uuid AS group_id
     FROM plan_pool_bindings
     GROUP BY plan_version_id
     HAVING count(*)=1
