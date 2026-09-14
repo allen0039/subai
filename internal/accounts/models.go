@@ -140,7 +140,7 @@ func (c *ModelClient) FetchCodexModels(ctx context.Context, client *http.Client,
 		if name == "" {
 			name = strings.TrimSpace(item.Model)
 		}
-		if strings.HasPrefix(strings.ToLower(name), "gpt-") {
+		if strings.HasPrefix(strings.ToLower(name), "gpt-") || name == "codex-auto-review" {
 			seen[name] = true
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"subai/internal/accounts"
 	"subai/internal/egress"
 	"subai/internal/storage"
 )
@@ -21,6 +22,11 @@ type modelSyncRequest struct {
 // capabilities.  A price catalogue is intentionally absent here: billing
 // configuration never establishes that an upstream can serve a model.
 func (s *Server) serviceGroupModelCandidates(w http.ResponseWriter, r *http.Request, groupID string) {
+	var platform string
+	if err := s.DB.Pool.QueryRow(r.Context(), `SELECT platform FROM account_groups WHERE id=$1`, groupID).Scan(&platform); err != nil {
+		s.writeErr(w, 404, "服务分组不存在")
+		return
+	}
 	rows, err := s.DB.Pool.Query(r.Context(), `
 		SELECT c.public_model, COUNT(DISTINCT c.account_id)
 		FROM account_model_capabilities c
@@ -34,6 +40,7 @@ func (s *Server) serviceGroupModelCandidates(w http.ResponseWriter, r *http.Requ
 	}
 	defer rows.Close()
 	out := []map[string]any{}
+	seen := map[string]bool{}
 	for rows.Next() {
 		var model string
 		var count int
@@ -41,11 +48,19 @@ func (s *Server) serviceGroupModelCandidates(w http.ResponseWriter, r *http.Requ
 			s.writeErr(w, 500, err.Error())
 			return
 		}
-		out = append(out, map[string]any{"model": model, "account_count": count})
+		seen[model] = true
+		out = append(out, map[string]any{"model": model, "account_count": count, "source": "account", "selectable": true})
 	}
 	if err := rows.Err(); err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
+	}
+	if platform == "codex" || platform == "openai_compatible" {
+		for _, model := range accounts.OpenAIPlatformModels {
+			if !seen[model] {
+				out = append(out, map[string]any{"model": model, "account_count": 0, "source": "platform", "selectable": false})
+			}
+		}
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})
 }
