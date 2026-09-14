@@ -879,6 +879,21 @@ const USER_NAV: NavItem[] = [
 
 type Identity = { member_id: string; name: string; role: "admin" | "member" };
 type BuildInfo = { version: string; revision: string; built_at: string };
+type Theme = "dark" | "light";
+
+function preferredTheme(): Theme {
+  const saved = window.localStorage.getItem("subai-theme");
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+const ThemeToggle: React.FC<{ theme: Theme; onToggle: () => void; compact?: boolean }> = ({ theme, onToggle, compact = false }) => {
+  const nextLabel = theme === "dark" ? "切换到浅色主题" : "切换到深色主题";
+  return <button className={`theme-toggle${compact ? " compact" : ""}`} type="button" onClick={onToggle} aria-label={nextLabel} title={nextLabel}>
+    <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
+    {!compact && <span>{theme === "dark" ? "浅色" : "深色"}</span>}
+  </button>;
+};
 
 const VersionStamp: React.FC<{ build: BuildInfo | null }> = ({ build }) => {
   if (!build) return <div className="app-version muted">版本未知</div>;
@@ -923,7 +938,7 @@ export const App: React.FC = () => {
   const [identity, setIdentity] = useState<Identity | null | undefined>(undefined);
   const [build, setBuild] = useState<BuildInfo | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [theme, setTheme] = useState<Theme>(preferredTheme);
   useEffect(() => {
     const fn = () => setHash(location.hash || "#/status");
     window.addEventListener("hashchange", fn);
@@ -936,19 +951,14 @@ export const App: React.FC = () => {
 	useEffect(() => { refreshIdentity(); }, []);
 	useEffect(() => { api.get<BuildInfo>("/api/version").then(setBuild).catch(() => setBuild(null)); }, []);
   useEffect(() => {
-    const saved = window.localStorage.getItem("subai-theme");
-    const next = saved === "light" || saved === "dark"
-      ? saved
-      : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    setTheme(next);
-  }, []);
-  useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("subai-theme", theme);
   }, [theme]);
 
+  const toggleTheme = () => setTheme((value) => value === "dark" ? "light" : "dark");
+
 	if (identity === undefined) return <div className="login-wrap">检查登录状态…</div>;
-  if (!identity) return <Login onLoggedIn={refreshIdentity} build={build} />;
+  if (!identity) return <Login onLoggedIn={refreshIdentity} build={build} theme={theme} onToggleTheme={toggleTheme} />;
 
   const navGroups = identity.role === "admin"
     ? ADMIN_NAV_GROUPS
@@ -1022,9 +1032,7 @@ export const App: React.FC = () => {
           <div className="topbar-actions">
             {identity.role === "admin" && <GlobalSearch />}
             <button className="btn small" type="button" onClick={() => window.location.reload()}>刷新</button>
-            <button className="btn small" type="button" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} aria-label="切换明暗主题">
-              {theme === "dark" ? "亮色" : "暗色"}
-            </button>
+            <ThemeToggle theme={theme} onToggle={toggleTheme} compact />
           </div>
         </header>
         <main>{content}</main>
@@ -1033,12 +1041,13 @@ export const App: React.FC = () => {
   );
 };
 
-const Login: React.FC<{ onLoggedIn: () => void | Promise<void>; build: BuildInfo | null }> = ({ onLoggedIn, build }) => {
+const Login: React.FC<{ onLoggedIn: () => void | Promise<void>; build: BuildInfo | null; theme: Theme; onToggleTheme: () => void }> = ({ onLoggedIn, build, theme, onToggleTheme }) => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   return (
     <div className="login-wrap">
+      <div className="login-theme-control"><ThemeToggle theme={theme} onToggle={onToggleTheme} /></div>
       <form
         className="login"
         onSubmit={async (e) => {
