@@ -89,3 +89,7 @@
 Scope: remove onboarding and administrator compliance gate; remove login agreement, model plaza and all platform social login settings/entry points. Keep password login and original GPT upstream OAuth. Plan: implement frontend/backend changes, run targeted tests/build and browser verification, publish image and update Oracle3 on port 18080 with existing new database retained.
 
 Console simplification: removed runtime compliance guards, tour mounting/replay UI, public plaza/legal routes, social auth route registrations (preserving WeChat payment OAuth). Removed settings cards and social defaults entries. Public settings force removed features off. Initial targeted frontend 48 passed; full suite 2095 passed with one obsolete WeChat route assertion, now updated. Typecheck passed before final HomeView cleanup. Backend lint 0 issues.
+
+
+## 2026-09-15 Confirm-only primary email replacement
+Implement explicit confirmation for authenticated users changing an already-bound email, with no email code/current-password prompt. Preserve password hash, alias collision checks, transaction and session invalidation. First-time binding retains its separate password setup flow. Test, publish and deploy without changing the actual administrator email.

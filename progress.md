@@ -142,3 +142,9 @@ Console simplification: removed runtime compliance guards, tour mounting/replay 
 Verification: affected backend service/server/middleware/routes/admin/dto packages passed; public settings handler expectation updated and focused rerun passed. GPT OAuth regression passed. Frontend full suite initially 2095/2096 (obsolete route assertion); corrected assertions plus HomeView/SettingsView/router rerun 51/51 passed. Final frontend typecheck and changed-file lint passed; production build passed. Publishing/deployment pending.
 
 Console simplification complete: full frontend 2096/2096 passed, backend targeted regressions and lint passed. Image publication run 34869035757 succeeded. Oracle3 deployed c4822df on port 18080 after backing up current database. Live API checks and fresh Chrome login/settings inspection passed. Browser script selector corrections: login lands on /dashboard (not /admin/dashboard); settings navigation uses ARIA tabs. No credential changes or database resets.
+
+
+## 2026-09-15 Confirm-only primary email replacement
+Implement explicit confirmation for authenticated users changing an already-bound email, with no email code/current-password prompt. Preserve password hash, alias collision checks, transaction and session invalidation. First-time binding retains its separate password setup flow. Test, publish and deploy without changing the actual administrator email.
+
+Email replacement implementation verified: 19 frontend/locale tests, typecheck, changed-file lint and production build passed. Backend confirmed-change, alias collision, password preservation, missing-confirmation handler and legacy first-binding tests passed. Publishing and deployment in progress; no actual user email has been changed.

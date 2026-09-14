@@ -14,6 +14,56 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 )
 
+// ChangePrimaryEmail changes the authenticated user's existing login email after
+// explicit confirmation, preserving the password and atomic alias checks.
+func (s *AuthService) ChangePrimaryEmail(ctx context.Context, userID int64, email string, confirmed bool) (*User, error) {
+	if s == nil {
+		return nil, ErrServiceUnavailable
+	}
+	if !confirmed {
+		return nil, infraerrors.BadRequest("EMAIL_CHANGE_CONFIRMATION_REQUIRED", "confirm the new email before saving")
+	}
+	normalized, err := normalizeEmailForIdentityBinding(email)
+	if err != nil {
+		return nil, err
+	}
+	address, err := mail.ParseAddress(normalized)
+	if err != nil || address.Address != normalized {
+		return nil, infraerrors.BadRequest("INVALID_EMAIL", "invalid email")
+	}
+	if isReservedEmail(normalized) {
+		return nil, ErrEmailReserved
+	}
+	currentUser, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !hasBindableEmailIdentitySubject(currentUser.Email) || currentUser.PasswordHash == "" {
+		return nil, infraerrors.BadRequest("EMAIL_NOT_BOUND", "bind an email and password before changing the primary email")
+	}
+	if normalized == currentUser.Email {
+		return currentUser, nil
+	}
+	if err := s.validateRegistrationEmailPolicy(ctx, normalized); err != nil {
+		return nil, err
+	}
+	if err := s.ensureEmailIdentityAvailableForUser(ctx, currentUser, normalized); err != nil {
+		return nil, err
+	}
+	if s.entClient != nil {
+		if err := s.updateBoundEmailIdentityTx(ctx, currentUser, normalized, currentUser.PasswordHash, false); err != nil {
+			return nil, err
+		}
+	} else {
+		currentUser.Email = normalized
+		if err := s.userRepo.Update(ctx, currentUser, UserUpdateFields{Email: true}); err != nil {
+			return nil, err
+		}
+	}
+	s.revokeEmailIdentitySessions(ctx, userID)
+	return currentUser, nil
+}
+
 // BindEmailIdentity verifies and binds a local email/password identity to the
 // current user, or replaces the existing bound primary email.
 func (s *AuthService) BindEmailIdentity(

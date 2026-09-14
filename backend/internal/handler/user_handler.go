@@ -239,8 +239,9 @@ type StartIdentityBindingRequest struct {
 
 type BindEmailIdentityRequest struct {
 	Email      string `json:"email" binding:"required,email"`
-	VerifyCode string `json:"verify_code" binding:"required"`
-	Password   string `json:"password" binding:"required"`
+	VerifyCode string `json:"verify_code"`
+	Password   string `json:"password"`
+	Confirmed  bool   `json:"confirmed"`
 }
 
 type SendEmailBindingCodeRequest struct {
@@ -273,7 +274,7 @@ func (h *UserHandler) StartIdentityBinding(c *gin.Context) {
 	response.Success(c, result)
 }
 
-// BindEmailIdentity verifies and binds a local email identity for the current user.
+// BindEmailIdentity supports verified first binding and confirmed primary email replacement.
 // POST /api/v1/user/account-bindings/email
 func (h *UserHandler) BindEmailIdentity(c *gin.Context) {
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
@@ -292,13 +293,18 @@ func (h *UserHandler) BindEmailIdentity(c *gin.Context) {
 		return
 	}
 
-	updatedUser, err := h.authService.BindEmailIdentity(
-		c.Request.Context(),
-		subject.UserID,
-		req.Email,
-		req.VerifyCode,
-		req.Password,
-	)
+	if !req.Confirmed && (req.VerifyCode == "" || req.Password == "") {
+		response.BadRequest(c, "Confirm the email change before saving")
+		return
+	}
+
+	var updatedUser *service.User
+	var err error
+	if req.Confirmed {
+		updatedUser, err = h.authService.ChangePrimaryEmail(c.Request.Context(), subject.UserID, req.Email, req.Confirmed)
+	} else {
+		updatedUser, err = h.authService.BindEmailIdentity(c.Request.Context(), subject.UserID, req.Email, req.VerifyCode, req.Password)
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

@@ -95,12 +95,14 @@
                 <input
                   v-model.trim="emailBindingForm.email"
                   data-testid="profile-binding-email-input"
+                  :class="{ 'sm:col-span-2': emailBound }"
                   type="email"
                   class="input"
                   :placeholder="t('profile.authBindings.emailPlaceholder')"
                   :disabled="isSendingEmailCode || isBindingEmail"
                 />
                 <button
+                  v-if="!emailBound"
                   data-testid="profile-binding-email-send-code"
                   type="button"
                   class="btn btn-secondary btn-sm"
@@ -115,6 +117,7 @@
                 </button>
                 <input
                   v-model.trim="emailBindingForm.verifyCode"
+                  v-if="!emailBound"
                   data-testid="profile-binding-email-code-input"
                   type="text"
                   inputmode="numeric"
@@ -125,6 +128,7 @@
                 />
                 <input
                   v-model="emailBindingForm.password"
+                  v-if="!emailBound"
                   data-testid="profile-binding-email-password-input"
                   type="password"
                   class="input"
@@ -136,7 +140,7 @@
                   type="button"
                   class="btn btn-primary btn-sm sm:col-span-2"
                   :disabled="isBindingEmail"
-                  @click="bindEmail"
+                  @click="requestEmailChange"
                 >
                   {{
                     isBindingEmail
@@ -190,6 +194,13 @@
       </div>
     </div>
   </div>
+  <ConfirmDialog
+    :show="showEmailConfirmation"
+    :title="t('profile.authBindings.replaceConfirmTitle')"
+    :message="t('profile.authBindings.replaceConfirmMessage', { oldEmail: localUser?.email, email: confirmedEmail })"
+    @confirm="confirmEmailChange"
+    @cancel="showEmailConfirmation = false"
+  />
 </template>
 
 <script setup lang="ts">
@@ -208,6 +219,7 @@ import {
   unbindAuthIdentity,
 } from '@/api/user'
 import Icon from '@/components/icons/Icon.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { useAppStore, useAuthStore } from '@/stores'
 import type { User, UserAuthBindingStatus, UserAuthProvider } from '@/types'
 
@@ -627,14 +639,35 @@ async function sendEmailCode(): Promise<void> {
   }
 }
 
+const showEmailConfirmation = ref(false)
+const confirmedEmail = ref('')
+
+function requestEmailChange(): void {
+  if (isBindingEmail.value || !validateEmailBindingForm(!emailBound.value)) return
+  if (emailBound.value) {
+    confirmedEmail.value = emailBindingForm.email
+    showEmailConfirmation.value = true
+  } else {
+    void bindEmail()
+  }
+}
+
+function confirmEmailChange(): void {
+  showEmailConfirmation.value = false
+  void bindEmail()
+}
+
 async function bindEmail(): Promise<void> {
-  if (!validateEmailBindingForm(true)) {
+  if (isBindingEmail.value || !validateEmailBindingForm(!emailBound.value)) {
     return
   }
 
   isBindingEmail.value = true
   try {
-    const user = await bindEmailIdentity({
+    const user = await bindEmailIdentity(emailBound.value ? {
+      email: confirmedEmail.value,
+      confirmed: true,
+    } : {
       email: emailBindingForm.email,
       verify_code: emailBindingForm.verifyCode,
       password: emailBindingForm.password,

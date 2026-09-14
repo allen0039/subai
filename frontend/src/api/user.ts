@@ -103,8 +103,9 @@ export async function sendEmailBindingCode(email: string): Promise<void> {
 
 export async function bindEmailIdentity(payload: {
   email: string
-  verify_code: string
-  password: string
+  verify_code?: string
+  password?: string
+  confirmed?: boolean
 }): Promise<User> {
   const { data } = await apiClient.post<User>('/user/account-bindings/email', payload)
   return data

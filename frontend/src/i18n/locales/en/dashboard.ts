@@ -928,6 +928,8 @@ export default {
       confirmEmailBindAction: 'Bind email',
       confirmEmailReplaceAction: 'Replace primary email',
       codeSentTo: 'Code sent to {email}',
+      replaceConfirmTitle: 'Confirm email change',
+      replaceConfirmMessage: 'Change your login email from {oldEmail} to {email}? Use the new email to sign in. Your password will stay the same.',
       replaceSuccess: 'Primary email updated',
       unbindAction: 'Unbind',
       unbindSuccess: '{providerName} unbound',

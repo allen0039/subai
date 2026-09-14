@@ -90,3 +90,7 @@ Scope: remove onboarding and administrator compliance gate; remove login agreeme
 Console simplification phases: implementation complete; source checks complete; image publish and live browser validation in progress.
 
 Console simplification phases complete: implementation, verification, image publication, production deployment and browser validation.
+
+
+## 2026-09-15 Confirm-only primary email replacement
+Implement explicit confirmation for authenticated users changing an already-bound email, with no email code/current-password prompt. Preserve password hash, alias collision checks, transaction and session invalidation. First-time binding retains its separate password setup flow. Test, publish and deploy without changing the actual administrator email.

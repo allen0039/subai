@@ -811,3 +811,29 @@ func TestUserHandlerStartIdentityBindingReturnsAuthorizeURL(t *testing.T) {
 	require.Contains(t, resp.Data.AuthorizeURL, "intent=bind_current_user")
 	require.Contains(t, resp.Data.AuthorizeURL, "redirect=%2Fsettings%2Fprofile")
 }
+
+func TestSubAIConfirmedEmailChangeWithoutVerification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, confirmed := range []bool{false, true} {
+		repo := &userHandlerRepoStub{user: &service.User{ID: 11, Email: "old@example.com", PasswordHash: "unchanged-hash", Role: service.RoleUser, Status: service.StatusActive}}
+		cfg := &config.Config{JWT: config.JWTConfig{Secret: "test-secret", ExpireHour: 1}}
+		auth := service.NewAuthService(nil, repo, nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+		handler := NewUserHandler(service.NewUserService(repo, nil, nil, nil), auth, nil, nil, nil, nil)
+		body, err := json.Marshal(map[string]any{"email": "new@example.com", "confirmed": confirmed})
+		require.NoError(t, err)
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/user/account-bindings/email", bytes.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 11})
+		handler.BindEmailIdentity(c)
+		if confirmed {
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			require.Equal(t, "new@example.com", repo.user.Email)
+		} else {
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+			require.Equal(t, "old@example.com", repo.user.Email)
+		}
+		require.Equal(t, "unchanged-hash", repo.user.PasswordHash)
+	}
+}

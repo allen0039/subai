@@ -1165,3 +1165,47 @@ func cloneEmailBindUser(user *service.User) *service.User {
 	cloned := *user
 	return &cloned
 }
+
+func TestSubAIChangePrimaryEmail_ConfirmWithoutCodePreservesPassword(t *testing.T) {
+	svc, _, client := newAuthServiceForEmailBind(t, nil, nil, nil)
+	ctx := context.Background()
+	hash, err := svc.HashPassword("existing-password")
+	require.NoError(t, err)
+	user, err := client.User.Create().SetEmail("old@example.com").SetPasswordHash(hash).SetRole(service.RoleUser).SetStatus(service.StatusActive).Save(ctx)
+	require.NoError(t, err)
+	_, err = client.AuthIdentity.Create().SetUserID(user.ID).SetProviderType("email").SetProviderKey("email").SetProviderSubject("old@example.com").Save(ctx)
+	require.NoError(t, err)
+	_, err = svc.ChangePrimaryEmail(ctx, user.ID, "new@example.com", false)
+	require.Error(t, err)
+	stored, err := client.User.Get(ctx, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, "old@example.com", stored.Email)
+	updated, err := svc.ChangePrimaryEmail(ctx, user.ID, "  NEW@example.com  ", true)
+	require.NoError(t, err)
+	require.Equal(t, "new@example.com", updated.Email)
+	stored, err = client.User.Get(ctx, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, hash, stored.PasswordHash)
+	require.True(t, svc.CheckPassword("existing-password", stored.PasswordHash))
+	identities, err := client.AuthIdentity.Query().Where(authidentity.UserIDEQ(user.ID)).All(ctx)
+	require.NoError(t, err)
+	require.Len(t, identities, 1)
+	require.Equal(t, "new@example.com", identities[0].ProviderSubject)
+}
+
+func TestSubAIChangePrimaryEmail_RejectsOccupiedAndInvalidAddresses(t *testing.T) {
+	svc, _, client := newAuthServiceForEmailBind(t, nil, nil, nil)
+	ctx := context.Background()
+	user, err := client.User.Create().SetEmail("owner@example.com").SetPasswordHash("existing-hash").SetRole(service.RoleUser).SetStatus(service.StatusActive).Save(ctx)
+	require.NoError(t, err)
+	_, err = client.User.Create().SetEmail("other@gmail.com").SetPasswordHash("other-hash").SetRole(service.RoleUser).SetStatus(service.StatusActive).Save(ctx)
+	require.NoError(t, err)
+	for _, email := range []string{"other@gmail.com", "o.ther+alias@gmail.com", "invalid", "Name <new@example.com>"} {
+		_, err := svc.ChangePrimaryEmail(ctx, user.ID, email, true)
+		require.Error(t, err, email)
+		stored, err := client.User.Get(ctx, user.ID)
+		require.NoError(t, err)
+		require.Equal(t, "owner@example.com", stored.Email)
+		require.Equal(t, "existing-hash", stored.PasswordHash)
+	}
+}

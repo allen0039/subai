@@ -932,6 +932,8 @@ export default {
       confirmEmailBindAction: '绑定邮箱',
       confirmEmailReplaceAction: '更换主邮箱',
       codeSentTo: '验证码已发送到 {email}',
+      replaceConfirmTitle: '确认更换邮箱',
+      replaceConfirmMessage: '确认将登录邮箱从 {oldEmail} 更换为 {email}？更换后请使用新邮箱登录，密码保持不变。',
       replaceSuccess: '主邮箱已更新',
       unbindAction: '解绑',
       unbindSuccess: '{providerName} 已解绑',

@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProfileIdentityBindingsSection from '@/components/user/profile/ProfileIdentityBindingsSection.vue'
@@ -478,26 +478,25 @@ describe('ProfileIdentityBindingsSection', () => {
     expect(wrapper.get('[data-testid="profile-binding-email-submit"]').text()).toBe(
       'Replace primary email'
     )
-    expect(
-      (wrapper.get('[data-testid="profile-binding-email-password-input"]').element as HTMLInputElement)
-        .placeholder
-    ).toBe('Current password')
-
+    expect(wrapper.find('[data-testid="profile-binding-email-password-input"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="profile-binding-email-code-input"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="profile-binding-email-send-code"]').exists()).toBe(false)
     await wrapper.get('[data-testid="profile-binding-email-input"]').setValue('new@example.com')
-    await wrapper.get('[data-testid="profile-binding-email-send-code"]').trigger('click')
-    expect(userApiMocks.sendEmailBindingCode).toHaveBeenCalledWith('new@example.com')
-
-    await wrapper.get('[data-testid="profile-binding-email-code-input"]').setValue('123456')
-    await wrapper.get('[data-testid="profile-binding-email-password-input"]').setValue(
-      'current-password'
-    )
     await wrapper.get('[data-testid="profile-binding-email-submit"]').trigger('click')
-
+    expect(userApiMocks.bindEmailIdentity).not.toHaveBeenCalled()
+    const confirmation = wrapper.findComponent({ name: 'ConfirmDialog' })
+    expect(confirmation.props('show')).toBe(true)
+    confirmation.vm.$emit('cancel')
+    await flushPromises()
+    expect(userApiMocks.bindEmailIdentity).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="profile-binding-email-submit"]').trigger('click')
+    confirmation.vm.$emit('confirm')
+    await flushPromises()
     expect(userApiMocks.bindEmailIdentity).toHaveBeenCalledWith({
       email: 'new@example.com',
-      verify_code: '123456',
-      password: 'current-password',
+      confirmed: true,
     })
+    expect(userApiMocks.sendEmailBindingCode).not.toHaveBeenCalled()
     expect(authStore.user?.email).toBe('new@example.com')
     expect(showSuccessSpy).toHaveBeenCalledWith('Primary email updated')
   })
