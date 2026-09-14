@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { Badge, Modal, ResourcePage, Field, Column } from "./components";
 import { cellText, dateTime, errorText, label, money } from "./locale";
@@ -131,6 +131,10 @@ const accountsPage = () => (
     ]}
     rowActions={(row, reload) => <><QuotaActions row={row} reload={reload} /><HoldActions row={row} reload={reload} /></>}
     notice={<OAuthStarter />}
+    filters={[
+      { name: "q", label: "账号", placeholder: "按标签前缀搜索" },
+      { name: "state", label: "状态", kind: "select", options: ["active", "paused", "refreshing", "reauth_required", "quota_exhausted", "proxy_unavailable", "recovery_hold"] },
+    ]}
   />
 );
 
@@ -653,38 +657,65 @@ const adminEventsPage = () => (
   />
 );
 
-const statusPage = () => {
-  const [s, setS] = useState<any>(null);
+const RequestTrend: React.FC<{ series: any[] }> = ({ series }) => {
+  if (!series.length) return <div className="empty-state">所选时间范围内还没有请求记录。</div>;
+  const peak = Math.max(1, ...series.map(item => Number(item.requests) || 0));
+  const points = series.map((item, index) => {
+    const x = series.length === 1 ? 50 : (index / (series.length - 1)) * 100;
+    const y = 92 - ((Number(item.requests) || 0) / peak) * 80;
+    return `${x},${y}`;
+  }).join(" ");
+  const last = series[series.length - 1];
+  return <div className="request-trend"><svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={`请求趋势，最高 ${peak} 次请求`}><polyline points={points} fill="none" stroke="var(--accent)" strokeWidth="3" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" /></svg><div className="trend-scale"><span>{series[0]?.start ? dateTime(series[0].start) : ""}</span><span>峰值 {peak}</span><span>{last?.start ? dateTime(last.start) : ""}</span></div></div>;
+};
+
+const RecentEvents: React.FC = () => {
+  const [events, setEvents] = useState<any[]>([]);
+  const [error, setError] = useState("");
   useEffect(() => {
-    api.get<any>("/api/admin/status").then(setS).catch(() => {});
-    const t = setInterval(() => api.get<any>("/api/admin/status").then(setS).catch(() => {}), 5000);
-    return () => clearInterval(t);
+    let mounted = true;
+    const load = async () => { try { const response = await api.get<any>("/api/admin/events"); if (mounted) { setEvents(response.data ?? []); setError(""); } } catch (cause) { if (mounted) setError(errorText(cause)); } };
+    void load();
+    const timer = window.setInterval(() => { void load(); }, 30000);
+    return () => { mounted = false; window.clearInterval(timer); };
   }, []);
-  if (!s) return <div className="muted">加载中…</div>;
-  return (
-    <div>
-      <h2>系统状态</h2>
-      <ul className="status-list">
-        <li>
-          服务就绪：<Badge value={s.production_ready ? "true" : "false"} domain="readiness" />
-        </li>
-        <li>进行中请求：{s.active_requests}</li>
-        <li>
-          结果待确认的请求：{s.unknown_requests}
-          {s.unknown_requests > 0 && <b className="req">（请在请求记录中完成结果核对）</b>}
-        </li>
-        <li>
-          账号状态：
-          {(s.accounts ?? []).map((a: any) => (
-            <span key={a.state}>
-              {" "}
-              <Badge value={a.state} domain="account" />×{a.count}
-            </span>
-          ))}
-        </li>
-      </ul>
-    </div>
-  );
+  if (error) return <div className="muted small">事件暂不可用：{error}</div>;
+  if (!events.length) return <div className="empty-state">最近 24 小时没有可展示的管理或审核事件。</div>;
+  return <div className="recent-events">{events.slice(0, 8).map(event => <div className="recent-event" key={`${event.kind}:${event.id}`}><span className={`event-kind event-kind-${event.kind}`}>{event.kind === "audit" ? "审" : "管"}</span><div><b>{label(event.title, event.kind === "audit" ? "" : "action")}</b><small>{event.description || "系统事件"}</small></div><time>{dateTime(event.created_at)}</time></div>)}</div>;
+};
+
+const statusPage = () => {
+  const [range, setRange] = useState<"24h" | "7d">("24h");
+  const [s, setS] = useState<any>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        const next = await api.get<any>(`/api/admin/dashboard?range=${range}`);
+        if (mounted) { setS(next); setError(""); }
+      } catch (cause) { if (mounted) setError(errorText(cause)); }
+    };
+    void load();
+    const timer = window.setInterval(() => { void load(); }, 30000);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, [range]);
+  if (!s) return <div className="status-loading" aria-live="polite">正在加载控制塔数据…</div>;
+  const accountStates = new Map<string, number>((s.accounts ?? []).map((account: any) => [String(account.state), Number(account.count) || 0]));
+  const activeAccounts = accountStates.get("active") ?? 0;
+  const inactiveAccounts = [...accountStates.entries()].filter(([state]) => state !== "active").reduce((total, [, count]) => total + count, 0);
+  const requests = (s.series ?? []).reduce((total: number, item: any) => total + (Number(item.requests) || 0), 0);
+  const succeeded = (s.series ?? []).reduce((total: number, item: any) => total + (Number(item.succeeded) || 0), 0);
+  const successRate = requests ? `${((succeeded / requests) * 100).toFixed(1)}%` : "—";
+  return <div className="status-dashboard">
+    <div className="page-head"><div><p className="eyebrow">CONTROL TOWER</p><h2>系统状态</h2></div><div className="grow" /><div className="range-switch" aria-label="统计范围"><button className={range === "24h" ? "active" : ""} type="button" onClick={() => setRange("24h")}>24 小时</button><button className={range === "7d" ? "active" : ""} type="button" onClick={() => setRange("7d")}>7 天</button></div><Badge value={s.production_ready ? "true" : "false"} domain="readiness" /></div>
+    <p className="muted status-description">数据截至 {dateTime(s.as_of)}；聚合粒度为{range === "24h" ? "小时" : "天"}。</p>
+    {error && <div className="error" role="alert">状态更新失败：{error}</div>}
+    <section className="status-card-grid" aria-label="运行摘要"><div className="status-card"><span>服务就绪</span><b>{s.production_ready ? "正常" : "受阻"}</b><small>{s.production_ready ? "生产流量可接入" : "请检查阻塞原因"}</small></div><div className="status-card"><span>请求数</span><b>{requests}</b><small>成功率 {successRate}</small></div><div className="status-card"><span>待确认结果</span><b>{Number(s.unknown_requests) || 0}</b><small>需要完成结果核对</small></div><div className="status-card"><span>可用上游账号</span><b>{activeAccounts}</b><small>{inactiveAccounts ? `${inactiveAccounts} 个非活跃账号` : "所有已登记账号均活跃"}</small></div></section>
+    <section className="dashboard-grid"><div className="status-panel"><div className="panel-heading"><h3>请求趋势</h3><span className="muted small">仅含已记录请求</span></div><RequestTrend series={s.series ?? []} /></div><div className="status-panel"><div className="panel-heading"><h3>配额快照</h3><span className="muted small">过期阈值 {Math.round((Number(s.quota?.stale_after_seconds) || 0) / 60)} 分钟</span></div><div className="quota-kpis"><b>{Number(s.quota?.coverage) || 0}<small>已同步</small></b><b className={s.quota?.stale ? "warn" : ""}>{Number(s.quota?.stale) || 0}<small>已过期</small></b></div></div></section>
+    {!s.production_ready && (s.not_ready_reasons ?? []).length > 0 && <section className="status-panel"><h3>阻塞原因</h3><ul>{s.not_ready_reasons.map((reason: string) => <li key={reason}>{reason}</li>)}</ul></section>}
+    <section className="dashboard-grid"><div className="status-panel"><h3>账号状态</h3><div className="status-state-list">{(s.accounts ?? []).length ? (s.accounts ?? []).map((account: any) => <span key={account.state}><Badge value={account.state} domain="account" /> <b>{account.count}</b></span>) : <span className="muted">尚未登记上游账号</span>}</div></div><div className="status-panel"><h3>最近事件</h3><RecentEvents /></div></section>
+  </div>;
 };
 
 const oauthPage = () => {
@@ -806,25 +837,40 @@ const routesPage: React.FC<{ keyId: string }> = ({ keyId }) => (
 
 // ── App shell ────────────────────────────────────────────────────────────────
 
-const ADMIN_NAV = [
-  { key: "#/status", label: "状态", page: statusPage },
-  { key: "#/users", label: "用户管理", page: membersPage },
-  { key: "#/plans", label: "套餐管理", page: AdminPlans },
-  { key: "#/subscriptions", label: "订阅分配", page: AdminSubscriptions },
-  { key: "#/accounts", label: "上游账号", page: accountsPage },
-  { key: "#/pools", label: "账号池", page: groupsPage },
-  { key: "#/proxies", label: "代理出口", page: proxiesPage },
-  { key: "#/egress", label: "出口策略", page: egressPage },
-  { key: "#/budgets", label: "预算策略", page: budgetsPage },
-  { key: "#/periods", label: "预算周期", page: periodsPage },
-  { key: "#/ledger", label: "用量账本", page: ledgerPage },
-  { key: "#/prices", label: "价格版本", page: pricesPage },
-  { key: "#/audit-rules", label: "审核规则", page: auditRulesPage },
-  { key: "#/audit-events", label: "审核事件", page: auditEventsPage },
-  { key: "#/admin-events", label: "管理事件", page: adminEventsPage },
+type NavItem = { key: string; label: string; page: React.ComponentType<any> };
+type NavGroup = { label?: string; items: NavItem[] };
+
+const ADMIN_NAV_GROUPS: NavGroup[] = [
+  { items: [
+    { key: "#/status", label: "仪表盘", page: statusPage },
+    { key: "#/ledger", label: "用量账本", page: ledgerPage },
+  ] },
+  { label: "用户与订阅", items: [
+    { key: "#/users", label: "用户管理", page: membersPage },
+    { key: "#/plans", label: "套餐管理", page: AdminPlans },
+    { key: "#/subscriptions", label: "订阅分配", page: AdminSubscriptions },
+  ] },
+  { label: "资源池", items: [
+    { key: "#/accounts", label: "上游账号", page: accountsPage },
+    { key: "#/pools", label: "账号池", page: groupsPage },
+    { key: "#/proxies", label: "代理出口", page: proxiesPage },
+  ] },
+  { label: "策略", items: [
+    { key: "#/egress", label: "出口策略", page: egressPage },
+    { key: "#/budgets", label: "预算策略", page: budgetsPage },
+    { key: "#/periods", label: "预算周期", page: periodsPage },
+    { key: "#/prices", label: "价格版本", page: pricesPage },
+  ] },
+  { label: "审计", items: [
+    { key: "#/audit-rules", label: "审核规则", page: auditRulesPage },
+    { key: "#/audit-events", label: "审核事件", page: auditEventsPage },
+    { key: "#/admin-events", label: "管理事件", page: adminEventsPage },
+  ] },
 ];
 
-const USER_NAV = [
+const ADMIN_NAV = ADMIN_NAV_GROUPS.flatMap((group) => group.items);
+
+const USER_NAV: NavItem[] = [
   { key: "#/overview", label: "我的概览", page: MyOverview },
   { key: "#/my-keys", label: "我的接口密钥", page: MyKeys },
   { key: "#/my-subscriptions", label: "我的订阅", page: MySubscriptions },
@@ -845,10 +891,39 @@ const VersionStamp: React.FC<{ build: BuildInfo | null }> = ({ build }) => {
   </div>;
 };
 
+const GlobalSearch: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<any[]>([]);
+  const [error, setError] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setOpen(true); }
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+  useEffect(() => { if (open) window.setTimeout(() => inputRef.current?.focus(), 0); }, [open]);
+  useEffect(() => {
+    if (!open || query.trim().length < 2) { setResults([]); setError(""); return; }
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try { const response = await api.get<any>(`/api/admin/search?q=${encodeURIComponent(query.trim())}`, { signal: controller.signal }); setResults(response.data ?? []); setError(""); }
+      catch (cause: any) { if (cause?.name !== "AbortError") { setResults([]); setError(errorText(cause)); } }
+    }, 180);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [open, query]);
+  return <><button className="btn small" type="button" onClick={() => setOpen(true)}>搜索 <kbd>⌘K</kbd></button>{open && <div className="search-backdrop" onMouseDown={() => setOpen(false)}><section className="search-dialog" role="dialog" aria-modal="true" aria-label="全局搜索" onMouseDown={event => event.stopPropagation()}><label className="field"><span className="field-label">搜索用户、密钥、账号或账号池</span><input ref={inputRef} value={query} onChange={event => setQuery(event.target.value)} placeholder="至少输入两个字符，按名称或前缀搜索" /></label>{error && <div className="error">搜索失败：{error}</div>}{query.trim().length < 2 ? <p className="muted small">输入至少两个字符开始搜索。</p> : results.length ? <div className="search-results">{results.map(result => <a key={`${result.type}:${result.id}`} href={result.href} onClick={() => setOpen(false)}><Badge value={result.status} domain={result.type === "account" ? "account" : ""} /><span>{result.title}</span><small>{result.type}</small></a>)}</div> : <p className="muted small">没有匹配的资源。</p>}</section></div>}</>;
+};
+
 export const App: React.FC = () => {
   const [hash, setHash] = useState(location.hash || "");
-	const [identity, setIdentity] = useState<Identity | null | undefined>(undefined);
+  const [identity, setIdentity] = useState<Identity | null | undefined>(undefined);
   const [build, setBuild] = useState<BuildInfo | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
   useEffect(() => {
     const fn = () => setHash(location.hash || "#/status");
     window.addEventListener("hashchange", fn);
@@ -860,11 +935,25 @@ export const App: React.FC = () => {
   };
 	useEffect(() => { refreshIdentity(); }, []);
 	useEffect(() => { api.get<BuildInfo>("/api/version").then(setBuild).catch(() => setBuild(null)); }, []);
+  useEffect(() => {
+    const saved = window.localStorage.getItem("subai-theme");
+    const next = saved === "light" || saved === "dark"
+      ? saved
+      : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    setTheme(next);
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("subai-theme", theme);
+  }, [theme]);
 
 	if (identity === undefined) return <div className="login-wrap">检查登录状态…</div>;
   if (!identity) return <Login onLoggedIn={refreshIdentity} build={build} />;
 
-  const navItems = identity.role === "admin" ? ADMIN_NAV : USER_NAV;
+  const navGroups = identity.role === "admin"
+    ? ADMIN_NAV_GROUPS
+    : [{ label: "个人中心", items: USER_NAV }];
+  const navItems = navGroups.flatMap((group) => group.items);
   const defaultHash = identity.role === "admin" ? "#/status" : "#/overview";
   const activeHash = hash || defaultHash;
 
@@ -883,15 +972,34 @@ export const App: React.FC = () => {
     content = nav ? React.createElement(nav.page) : <div className="muted">未知页面</div>;
   }
 
+  const activeNav = navItems.find((n) => activeHash.startsWith(n.key));
+
   return (
-    <div className="layout">
-      <aside>
-        <div className="brand">SubAI <small>{identity.role === "admin" ? "运营台" : "个人台"}</small></div>
-        <nav>
-          {navItems.map((n) => (
-            <a key={n.key} href={n.key} className={activeHash.startsWith(n.key) ? "active" : ""}>
-              {n.label}
-            </a>
+    <div className={`layout control-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <aside className="control-sidebar">
+        <div className="brand-row">
+          <div className="brand">SubAI <small>{identity.role === "admin" ? "运营台" : "个人台"}</small></div>
+          <button
+            className="sidebar-toggle"
+            type="button"
+            onClick={() => setSidebarCollapsed((value) => !value)}
+            aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+          >
+            {sidebarCollapsed ? "›" : "‹"}
+          </button>
+        </div>
+        <nav aria-label={identity.role === "admin" ? "管理导航" : "个人导航"}>
+          {navGroups.map((group, index) => (
+            <div className="nav-group" key={group.label ?? `overview-${index}`}>
+              {group.label && <div className="nav-group-label">{group.label}</div>}
+              {group.items.map((n) => (
+                <a key={n.key} href={n.key} className={activeHash.startsWith(n.key) ? "active" : ""}>
+                  <span className="nav-item-marker" aria-hidden="true" />
+                  <span>{n.label}</span>
+                </a>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="grow" />
@@ -908,7 +1016,19 @@ export const App: React.FC = () => {
           退出登录
         </button>
       </aside>
-      <main>{content}</main>
+      <div className="control-main">
+        <header className="control-topbar">
+          <div className="breadcrumb"><span>{identity.role === "admin" ? "运营台" : "个人台"}</span><b>{activeNav?.label ?? "未知页面"}</b></div>
+          <div className="topbar-actions">
+            {identity.role === "admin" && <GlobalSearch />}
+            <button className="btn small" type="button" onClick={() => window.location.reload()}>刷新</button>
+            <button className="btn small" type="button" onClick={() => setTheme((value) => value === "dark" ? "light" : "dark")} aria-label="切换明暗主题">
+              {theme === "dark" ? "亮色" : "暗色"}
+            </button>
+          </div>
+        </header>
+        <main>{content}</main>
+      </div>
     </div>
   );
 };

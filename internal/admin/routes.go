@@ -26,6 +26,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/me/subscriptions", s.RequireSession(getOnly(func(w http.ResponseWriter, r *http.Request) {
 		s.listSubscriptions(w, r, identityFrom(r).MemberID)
 	})))
+	mux.Handle("/api/admin/me/overview", s.RequireSession(getOnly(s.memberOverview)))
 	mux.Handle("/api/admin/me/keys", s.RequireSession(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -552,6 +553,9 @@ func (s *Server) Routes() http.Handler {
 		s.writeErr(w, 404, "unknown request action")
 	}))
 	mux.Handle("/api/admin/status", s.RequireAdmin(getOnly(s.status)))
+	mux.Handle("/api/admin/dashboard", s.RequireAdmin(getOnly(s.dashboard)))
+	mux.Handle("/api/admin/search", s.RequireAdmin(getOnly(s.search)))
+	mux.Handle("/api/admin/events", s.RequireAdmin(getOnly(s.listRecentEvents)))
 	mux.Handle("/api/admin/admin-events", s.RequireAdmin(getOnly(s.listAdminEvents)))
 
 	return mux

@@ -18,7 +18,7 @@ deploy:
 	$(MAKE) ci-watch
 	$(MAKE) pull-update
 
-# Pull the newest GHCR image on Oracle3 (use after CI has already published).
+# Pull the newest Docker Hub image on Oracle3 (use after CI has already published).
 pull-update:
 	@sha=$$(git rev-parse HEAD); \
 	ssh oracle3 "cd /opt/1panel/docker/compose/subai && docker compose pull server && docker compose up -d && printf '%s\\n' '$$sha' > DEPLOYED_COMMIT && docker ps --filter name=subai-server --format '{{.Image}} {{.Status}}'"

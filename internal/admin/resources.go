@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -312,6 +313,27 @@ func (s *Server) createEgressPolicy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 	limit, offset, _ := pageParams(r, []string{"created_at", "label"})
+	args := []any{}
+	where := ""
+	if state := strings.TrimSpace(r.URL.Query().Get("state")); state != "" {
+		valid := map[string]bool{"active": true, "paused": true, "refreshing": true, "reauth_required": true, "quota_exhausted": true, "proxy_unavailable": true, "recovery_hold": true}
+		if !valid[state] {
+			s.writeErr(w, http.StatusBadRequest, "invalid account state")
+			return
+		}
+		args = append(args, state)
+		where = " WHERE a.state=$" + strconv.Itoa(len(args))
+	}
+	if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
+		args = append(args, q+"%")
+		if where == "" {
+			where = " WHERE "
+		} else {
+			where += " AND "
+		}
+		where += "a.label ILIKE $" + strconv.Itoa(len(args))
+	}
+	args = append(args, limit, offset)
 	rows, err := s.DB.Pool.Query(r.Context(), `
 		SELECT a.id::text, a.provider, a.label, a.state, a.concurrency_limit, a.priority,
 		       COALESCE(a.egress_policy_id::text,''), a.credential_version, COALESCE(a.expires_at::text,''),
@@ -322,7 +344,7 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN egress_policies ep ON ep.id=a.egress_policy_id
 		LEFT JOIN proxy_profiles pp ON pp.id=ep.primary_proxy_id
 		LEFT JOIN account_quota_snapshots q ON q.account_id=a.id
-		ORDER BY a.created_at DESC, a.id LIMIT $1 OFFSET $2`, limit, offset)
+		`+where+` ORDER BY a.created_at DESC, a.id LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		s.writeErr(w, 500, err.Error())
 		return

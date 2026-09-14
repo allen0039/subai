@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useId, useRef } from "react";
 import { api, ListResponse } from "./api";
 import { label, cellText } from "./locale";
 
@@ -35,6 +35,14 @@ export interface Column {
   render?: (row: any) => React.ReactNode;
 }
 
+export interface ResourceFilter {
+  name: string;
+  label: string;
+  kind?: "text" | "select";
+  options?: (string | { value: string; label: string })[];
+  placeholder?: string;
+}
+
 export interface ResourcePageProps {
   title: string;
   basePath: string; // e.g. /api/admin/members
@@ -43,6 +51,8 @@ export interface ResourcePageProps {
   editFields?: Field[]; // patch body; uses row.version automatically
   rowActions?: (row: any, reload: () => void) => React.ReactNode;
   notice?: React.ReactNode;
+  filters?: ResourceFilter[];
+  emptyState?: React.ReactNode;
 }
 
 export const ResourcePage: React.FC<ResourcePageProps> = ({
@@ -53,6 +63,8 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
   editFields,
   rowActions,
   notice,
+  filters = [],
+  emptyState,
 }) => {
   const [rows, setRows] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -62,26 +74,36 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
   const [editRow, setEditRow] = useState<any | null>(null);
   const [editBody, setEditBody] = useState<Record<string, any>>({});
   const [flash, setFlash] = useState<string | null>(null);
+  const [filterValues, setFilterValues] = useState<Record<string, string>>({});
+  const activeRequest = useRef<AbortController | null>(null);
 
   const pageSize = 20;
 
   const load = useCallback(async (off = 0) => {
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
     setLoading(true);
     setError(null);
     try {
-      const sep = basePath.includes("?") ? "&" : "?";
+      const url = new URL(basePath, window.location.origin);
+      url.searchParams.set("limit", String(pageSize + 1));
+      url.searchParams.set("offset", String(off));
+      for (const [name, value] of Object.entries(filterValues)) if (value.trim()) url.searchParams.set(name, value.trim());
       // fetch one extra row to detect a next page (review P2-13: 分页)
-      const r = await api.get<ListResponse>(`${basePath}${sep}limit=${pageSize + 1}&offset=${off}`);
+      const r = await api.get<ListResponse>(url.pathname + url.search, { signal: controller.signal });
+      if (activeRequest.current !== controller) return;
       const data = r.data ?? [];
       setRows(data.slice(0, pageSize));
       setHasMore(data.length > pageSize);
       setOffset(off);
     } catch (e: any) {
+      if (e?.name === "AbortError") return;
       setError(e.message);
     } finally {
-      setLoading(false);
+      if (activeRequest.current === controller) setLoading(false);
     }
-  }, [basePath]);
+  }, [basePath, filterValues]);
 
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
@@ -89,6 +111,8 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
   useEffect(() => {
     load(0);
   }, [load]);
+
+  useEffect(() => () => activeRequest.current?.abort(), []);
 
   useEffect(() => {
     const refresh = () => load(0);
@@ -162,6 +186,14 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
           刷新
         </button>
       </div>
+      {filters.length > 0 && <div className="resource-toolbar" aria-label={`${title}筛选`}>
+        {filters.map((filter) => <label key={filter.name} className="resource-filter"><span>{filter.label}</span>
+          {filter.kind === "select" ? <select value={filterValues[filter.name] ?? ""} onChange={(event) => setFilterValues(values => ({ ...values, [filter.name]: event.target.value }))}>
+            <option value="">全部</option>{(filter.options ?? []).map(option => typeof option === "string" ? <option key={option} value={option}>{label(option)}</option> : <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select> : <input value={filterValues[filter.name] ?? ""} placeholder={filter.placeholder} onChange={(event) => setFilterValues(values => ({ ...values, [filter.name]: event.target.value }))} />}
+        </label>)}
+        <button type="button" className="btn small" onClick={() => setFilterValues({})}>清除筛选</button>
+      </div>}
       <div className="pager">
         <button className="btn small" disabled={offset === 0 || loading} onClick={() => load(Math.max(0, offset - pageSize))}>
           上一页
@@ -182,7 +214,7 @@ export const ResourcePage: React.FC<ResourcePageProps> = ({
       {loading ? (
         <div className="muted">加载中…</div>
       ) : rows.length === 0 ? (
-        <div className="muted">暂无数据</div>
+        <div className="empty-state">{emptyState ?? "暂无数据。调整筛选条件或创建第一条记录。"}</div>
       ) : (
         <table className="tbl">
           <thead>
@@ -352,10 +384,28 @@ export const Modal: React.FC<{ title: string; onClose: () => void; onSubmit: () 
   submitLabel = "提交",
   submitDisabled = false,
   className = "",
-}) => (
+}) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  const titleID = useId();
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); onCloseRef.current(); }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      openerRef.current?.focus();
+    };
+  }, []);
+  return (
   <div className="modal-backdrop" onClick={onClose}>
-    <div className={`modal ${className}`.trim()} role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
-      <h3>{title}</h3>
+    <div ref={dialogRef} tabIndex={-1} className={`modal ${className}`.trim()} role="dialog" aria-modal="true" aria-labelledby={titleID} onClick={(e) => e.stopPropagation()}>
+      <h3 id={titleID}>{title}</h3>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -374,7 +424,8 @@ export const Modal: React.FC<{ title: string; onClose: () => void; onSubmit: () 
       </form>
     </div>
   </div>
-);
+  );
+};
 
 export const Badge: React.FC<{ value: string; domain?: string }> = ({ value, domain }) => (
   <span className={`badge badge-${value}`}>{label(value, domain)}</span>

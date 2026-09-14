@@ -58,7 +58,8 @@
 | 预算 | GET/POST /budget-policies；GET /budget-periods；GET /ledger |
 | 价格 | GET /prices/versions；POST /prices/sync；POST /prices/overrides |
 | 审核 | GET /audit/rules；PATCH /audit/rules/{rule_id}（生成新版本）；POST /audit/rules/validate（仅本地匹配）；GET /audit/events；POST /audit/events/{id}/review |
-| 系统 | GET /status；GET /admin-events |
+| 系统 | GET /status；GET /dashboard?range=24h\|7d；GET /events?since=<RFC3339>；GET /search?q=<2–80 字符>&types=user,key,account,pool；GET /admin-events |
+| 个人概览 | GET /me/overview（当前成员的订阅、Key、最近使用时间和近 7 日已记账成本；不返回账号、代理或出口信息） |
 
 通用约束：
 
@@ -68,3 +69,4 @@
 - 预算 percent 模式校验 base_policy_id 必须为同周期 fixed 策略（防循环）。
 - 审核规则修改生成新版本行，历史保留；恢复默认=由种子逻辑重新补入。
 - 复核接口只记录结论或创建带 TTL 的精确例外，从不重放请求。
+- 仪表盘和事件流均为有界聚合/增量读取，不能替代账本明细；全局搜索仅支持前缀匹配，并且不会返回任何凭据字段。

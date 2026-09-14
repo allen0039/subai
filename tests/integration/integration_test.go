@@ -160,7 +160,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		"usage_ledger", "reservations", "requests", "model_prices", "price_versions",
 		"plan_pool_bindings", "user_account_grants", "user_pool_grants", "user_subscriptions", "plan_versions", "plans",
 		"budget_periods", "budget_policies", "key_routes", "account_group_members", "account_groups",
-		"account_holds", "accounts", "egress_policies", "proxy_profiles", "api_keys", "clients", "members", "admin_events", "settings", "schema_migrations",
+		"account_holds", "account_quota_snapshots", "accounts", "egress_policies", "proxy_profiles", "api_keys", "clients", "members", "admin_events", "settings", "schema_migrations",
 	} {
 		if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE"); err != nil {
 			t.Fatalf("clean table %s: %v", table, err)

@@ -9,7 +9,9 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export type RequestOptions = { signal?: AbortSignal };
+
+async function request<T>(method: string, path: string, body?: unknown, options?: RequestOptions): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   let resp: Response;
@@ -18,7 +20,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     credentials: "same-origin",
-  }); } catch (error) { throw new ApiError(0, errorText(error)); }
+    signal: options?.signal,
+  }); } catch (error) {
+    if ((error as { name?: string })?.name === "AbortError") throw error;
+    throw new ApiError(0, errorText(error));
+  }
   if (resp.status === 401 && !path.endsWith("/session")) {
     throw new ApiError(401, "会话已过期，请重新登录");
   }
@@ -39,7 +45,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
-  get: <T>(p: string) => request<T>("GET", p),
+  get: <T>(p: string, options?: RequestOptions) => request<T>("GET", p, undefined, options),
   post: <T>(p: string, b?: unknown) => request<T>("POST", p, b ?? {}),
   patch: <T>(p: string, b: unknown) => request<T>("PATCH", p, b),
   del: <T>(p: string, b?: unknown) => request<T>("DELETE", p, b ?? {}),
