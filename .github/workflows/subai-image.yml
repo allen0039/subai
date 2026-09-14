@@ -1,6 +1,14 @@
 name: SubAI image
 on:
   workflow_dispatch:
+    inputs:
+      cleanup_old_tags:
+        description: Delete old subai-server tags after publishing and verifying the new image
+        type: boolean
+        default: false
+concurrency:
+  group: subai-image-publish
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:
@@ -19,8 +27,24 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/subai-server:sha-${{ github.sha }}
+          tags: |
+            allen0039/subai-server:latest
+            allen0039/subai-server:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           build-args: |
             COMMIT=${{ github.sha }}
             GOPROXY=https://proxy.golang.org,direct
             GOSUMDB=sum.golang.org
+      - name: Verify published image
+        env:
+          IMAGE: allen0039/subai-server
+        run: |
+          docker buildx imagetools inspect "$IMAGE:sha-$GITHUB_SHA"
+          docker buildx imagetools inspect "$IMAGE:latest"
+      - name: Remove previous image tags
+        if: ${{ inputs.cleanup_old_tags }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: python3 tools/subai_dockerhub_cleanup.py --delete
