@@ -150,17 +150,8 @@ func (s *Server) Models(w http.ResponseWriter, r *http.Request) {
 		s.Ready.NotReadyError(rid).write(w)
 		return
 	}
-	version, err := billing.ActivePriceVersion(r.Context(), s.DB.Pool)
-	if err != nil {
-		s.Ready.NotReadyError(rid).write(w)
-		return
-	}
-	rows, err := s.DB.Pool.Query(r.Context(), `SELECT model FROM model_prices WHERE price_version_id=$1 ORDER BY model`, version)
-	if err != nil {
-		errUpstream(rid, "model list unavailable").write(w)
-		return
-	}
-	defer rows.Close()
+	models, err := s.Sched.ModelsForKey(r.Context(), info.ID)
+	if err != nil { errUpstream(rid, "model list unavailable").write(w); return }
 	type model struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
@@ -169,11 +160,7 @@ func (s *Server) Models(w http.ResponseWriter, r *http.Request) {
 	}
 	var out []model
 	now := time.Now().Unix()
-	for rows.Next() {
-		var m string
-		if err := rows.Scan(&m); err != nil {
-			continue
-		}
+	for _, m := range models {
 		if info.AllowedModels != nil && !contains(info.AllowedModels, m) {
 			continue
 		}

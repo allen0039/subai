@@ -161,11 +161,21 @@ func (s *Scheduler) RoutesFor(ctx context.Context, keyID string) ([]Route, error
 	s.mu.Unlock()
 	rows, err := s.pool.Query(ctx, `
 		SELECT target_type, target_id::text, priority FROM (
-			-- New Keys: the selected subscription contributes its plan pools.
-			SELECT 'group'::text AS target_type, b.pool_id AS target_id, b.priority
+			-- New subscriptions route through one customer-facing service group.
+			SELECT 'group'::text AS target_type, COALESCE(us.service_group_id,pv.service_group_id) AS target_id, 100 AS priority
 			FROM api_keys k JOIN user_subscriptions us ON us.id=k.user_subscription_id AND us.member_id=k.member_id
+			JOIN plan_versions pv ON pv.id=us.plan_version_id
+			WHERE k.id=$1 AND us.status='active' AND us.starts_at<=now() AND us.expires_at>now()
+			  AND COALESCE(us.service_group_id,pv.service_group_id) IS NOT NULL
+			UNION ALL
+			-- Multi-pool historical plans stay live until an administrator splits
+			-- them into service groups. New plans never take this route.
+			SELECT 'group'::text, b.pool_id, b.priority
+			FROM api_keys k JOIN user_subscriptions us ON us.id=k.user_subscription_id AND us.member_id=k.member_id
+			JOIN plan_versions pv ON pv.id=us.plan_version_id
 			JOIN plan_pool_bindings b ON b.plan_version_id=us.plan_version_id
 			WHERE k.id=$1 AND us.status='active' AND us.starts_at<=now() AND us.expires_at>now()
+			  AND COALESCE(us.service_group_id,pv.service_group_id) IS NULL
 			UNION ALL
 			-- Explicit user grants apply to every current subscription Key.
 			SELECT 'account'::text, g.account_id, g.priority
@@ -277,24 +287,42 @@ func (s *Scheduler) acquire(ctx context.Context, keyID string, keyLimit int, sub
 				addAcct(a, tier)
 			}
 		case "group":
+			accountGroupID, mappedModel, resolved, serr := s.resolveServiceGroupRoute(ctx, r.TargetID, publicModel)
+			if serr != nil || !resolved {
+				continue
+			}
 			if publicModel != "" {
 				allowed, serr := s.groupAllowsModel(ctx, r.TargetID, publicModel)
 				if serr != nil || !allowed {
 					continue
 				}
 			}
-			list, err := s.groupAccounts(ctx, r.TargetID)
+			if accountGroupID != r.TargetID && publicModel != "" {
+				allowed, serr := s.groupAllowsModel(ctx, accountGroupID, publicModel)
+				if serr != nil || !allowed {
+					continue
+				}
+			}
+			list, err := s.groupAccounts(ctx, accountGroupID)
 			if err != nil {
 				continue
 			}
 			for _, a := range list {
 				a.GroupID = r.TargetID
 				if publicModel != "" {
-					upstreamModel, ok, serr := s.accountSupportsModel(ctx, a.ID, publicModel)
-					if serr != nil || !ok {
-						continue
+					if mappedModel != "" {
+						ok, serr := s.accountSupportsUpstreamModel(ctx, a.ID, mappedModel)
+						if serr != nil || !ok {
+							continue
+						}
+						a.UpstreamModel = mappedModel
+					} else {
+						upstreamModel, ok, serr := s.accountSupportsModel(ctx, a.ID, publicModel)
+						if serr != nil || !ok {
+							continue
+						}
+						a.UpstreamModel = upstreamModel
 					}
-					a.UpstreamModel = upstreamModel
 				}
 				addAcct(a, tier)
 			}
@@ -376,11 +404,115 @@ func (s *Scheduler) acquire(ctx context.Context, keyID string, keyLimit int, sub
 }
 
 func (s *Scheduler) groupAllowsModel(ctx context.Context, groupID, publicModel string) (bool, error) {
-	var total, active int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE status='active') FROM account_group_model_rules WHERE group_id=$1 AND public_model=$2`, groupID, publicModel).Scan(&total, &active); err != nil {
+	var enabled bool
+	if err := s.pool.QueryRow(ctx, `SELECT model_allowlist_enabled FROM account_groups WHERE id=$1`, groupID).Scan(&enabled); err != nil {
 		return false, err
 	}
-	return total == 0 || active > 0, nil
+	if !enabled {
+		return true, nil
+	}
+	var count int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM account_group_model_rules WHERE group_id=$1 AND status='active' AND (public_model=$2 OR (right(public_model,1)='*' AND $2 LIKE left(public_model,length(public_model)-1) || '%'))`, groupID, publicModel).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// resolveServiceGroupRoute turns a composite service group into the concrete
+// upstream service group. Ordinary groups may still map a public name to an
+// upstream name; account capabilities remain the default when no map exists.
+func (s *Scheduler) resolveServiceGroupRoute(ctx context.Context, groupID, publicModel string) (string, string, bool, error) {
+	var platform string
+	if err := s.pool.QueryRow(ctx, `SELECT platform FROM account_groups WHERE id=$1 AND status='active'`, groupID).Scan(&platform); err != nil {
+		return "", "", false, err
+	}
+	if publicModel == "" {
+		if platform == "composite" {
+			return "", "", false, nil
+		}
+		return groupID, "", true, nil
+	}
+	var targetID, upstream string
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(target_group_id::text,''),upstream_model FROM service_group_model_routes WHERE group_id=$1 AND public_model=$2 AND status='active' ORDER BY priority,id LIMIT 1`, groupID, publicModel).Scan(&targetID, &upstream)
+	if err == nil {
+		if platform == "composite" && targetID == "" {
+			return "", "", false, nil
+		}
+		if targetID != "" {
+			return targetID, upstream, true, nil
+		}
+		return groupID, upstream, true, nil
+	}
+	if platform == "composite" {
+		return "", "", false, nil
+	}
+	return groupID, "", true, nil
+}
+
+// ModelsForKey produces the exact models reachable through current routes.
+// It never consults the billing price catalog: that catalog measures cost and
+// cannot be used as proof of an upstream capability.
+func (s *Scheduler) ModelsForKey(ctx context.Context, keyID string) ([]string, error) {
+	routes, err := s.RoutesFor(ctx, keyID)
+	if err != nil {
+		return nil, err
+	}
+	set := map[string]bool{}
+	for _, route := range routes {
+		switch route.TargetType {
+		case "account":
+			rows, err := s.pool.Query(ctx, `SELECT public_model FROM account_model_capabilities WHERE account_id=$1 AND status='active'`, route.TargetID)
+			if err != nil {
+				continue
+			}
+			for rows.Next() {
+				var model string
+				if rows.Scan(&model) == nil {
+					set[model] = true
+				}
+			}
+			rows.Close()
+		case "group":
+			var platform string
+			if s.pool.QueryRow(ctx, `SELECT platform FROM account_groups WHERE id=$1 AND status='active'`, route.TargetID).Scan(&platform) != nil {
+				continue
+			}
+			if platform == "composite" {
+				rows, err := s.pool.Query(ctx, `SELECT r.public_model FROM service_group_model_routes r JOIN account_groups g ON g.id=r.target_group_id AND g.status='active' WHERE r.group_id=$1 AND r.status='active'`, route.TargetID)
+				if err != nil {
+					continue
+				}
+				for rows.Next() {
+					var model string
+					if rows.Scan(&model) == nil {
+						set[model] = true
+					}
+				}
+				rows.Close()
+				continue
+			}
+			rows, err := s.pool.Query(ctx, `SELECT DISTINCT c.public_model FROM account_model_capabilities c JOIN account_group_members m ON m.account_id=c.account_id JOIN accounts a ON a.id=c.account_id WHERE m.group_id=$1 AND a.state='active' AND c.status='active'`, route.TargetID)
+			if err != nil {
+				continue
+			}
+			for rows.Next() {
+				var model string
+				if rows.Scan(&model) == nil {
+					allowed, e := s.groupAllowsModel(ctx, route.TargetID, model)
+					if e == nil && allowed {
+						set[model] = true
+					}
+				}
+			}
+			rows.Close()
+		}
+	}
+	out := make([]string, 0, len(set))
+	for model := range set {
+		out = append(out, model)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func (s *Scheduler) accountSupportsModel(ctx context.Context, accountID, publicModel string) (string, bool, error) {
@@ -400,6 +532,21 @@ func (s *Scheduler) accountSupportsModel(ctx context.Context, accountID, publicM
 		return "", false, err
 	}
 	return upstream, true, nil
+}
+
+func (s *Scheduler) accountSupportsUpstreamModel(ctx context.Context, accountID, upstreamModel string) (bool, error) {
+	var total int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM account_model_capabilities WHERE account_id=$1`, accountID).Scan(&total); err != nil {
+		return false, err
+	}
+	if total == 0 {
+		return true, nil
+	}
+	var count int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM account_model_capabilities WHERE account_id=$1 AND upstream_model=$2 AND status='active'`, accountID, upstreamModel).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (s *Scheduler) releaseFunc(keyID, subscriptionID, accountID string) func() {

@@ -16,6 +16,92 @@ type modelSyncRequest struct {
 	PoolIDs []string `json:"pool_ids"`
 }
 
+// ServiceGroupModelCandidates is the service-group view of upstream
+// capabilities.  A price catalogue is intentionally absent here: billing
+// configuration never establishes that an upstream can serve a model.
+func (s *Server) serviceGroupModelCandidates(w http.ResponseWriter, r *http.Request, groupID string) {
+	rows, err := s.DB.Pool.Query(r.Context(), `
+		SELECT c.public_model, COUNT(DISTINCT c.account_id)
+		FROM account_model_capabilities c
+		JOIN accounts a ON a.id=c.account_id AND a.state='active'
+		JOIN account_group_members gm ON gm.account_id=c.account_id
+		WHERE gm.group_id=$1 AND c.status='active'
+		GROUP BY c.public_model ORDER BY c.public_model`, groupID)
+	if err != nil {
+		s.writeErr(w, 500, err.Error())
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var model string
+		var count int
+		if err := rows.Scan(&model, &count); err != nil {
+			s.writeErr(w, 500, err.Error())
+			return
+		}
+		out = append(out, map[string]any{"model": model, "account_count": count})
+	}
+	if err := rows.Err(); err != nil {
+		s.writeErr(w, 500, err.Error())
+		return
+	}
+	s.writeJSON(w, 200, map[string]any{"data": out})
+}
+
+func (s *Server) syncServiceGroupModels(w http.ResponseWriter, r *http.Request, groupID string) {
+	if s.Models == nil || s.Egress == nil {
+		s.writeErr(w, http.StatusServiceUnavailable, "上游模型同步服务尚未配置")
+		return
+	}
+	var platform string
+	if err := s.DB.Pool.QueryRow(r.Context(), `SELECT platform FROM account_groups WHERE id=$1`, groupID).Scan(&platform); err != nil {
+		s.writeErr(w, 404, "服务分组不存在")
+		return
+	}
+	if platform != "codex" {
+		s.writeErr(w, 400, "当前仅 Codex 服务分组支持自动同步；其他平台请在上游账号中配置模型能力")
+		return
+	}
+	rows, err := s.DB.Pool.Query(r.Context(), `SELECT DISTINCT a.id::text FROM accounts a JOIN account_group_members gm ON gm.account_id=a.id WHERE gm.group_id=$1 AND a.provider='codex' AND a.state='active' ORDER BY a.id`, groupID)
+	if err != nil {
+		s.writeErr(w, 500, err.Error())
+		return
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			s.writeErr(w, 500, err.Error())
+			return
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		s.writeErr(w, 400, "服务分组没有已启用的 Codex 上游账号")
+		return
+	}
+	updated, failed := 0, 0
+	for _, id := range ids {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		err := s.syncOneAccountModels(ctx, id)
+		cancel()
+		if err != nil {
+			failed++
+			continue
+		}
+		updated++
+	}
+	if updated == 0 {
+		s.writeErr(w, http.StatusBadGateway, "未能读取官方 Codex 模型，请检查账号授权与出口策略")
+		return
+	}
+	s.notifyMutation()
+	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "service_group.model_sync", "service_group", groupID, storage.SanitizeForAdminEvent(map[string]any{"accounts": updated, "failed": failed}), "")
+	s.writeJSON(w, 200, map[string]any{"updated_accounts": updated, "failed_accounts": failed})
+}
+
 func parseModelPoolIDs(raw string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -41,9 +127,9 @@ func (s *Server) listAccountModelCandidates(w http.ResponseWriter, r *http.Reque
 	rows, err := s.DB.Pool.Query(r.Context(), `
 		SELECT c.public_model, COUNT(DISTINCT c.account_id)
 		FROM account_model_capabilities c
-		JOIN accounts a ON a.id=c.account_id AND a.provider='codex' AND a.state='active'
+		JOIN accounts a ON a.id=c.account_id AND a.state='active'
 		JOIN account_group_members gm ON gm.account_id=c.account_id
-		WHERE c.status='active' AND c.public_model LIKE 'gpt-%' AND gm.group_id = ANY($1::uuid[])
+		WHERE c.status='active' AND gm.group_id = ANY($1::uuid[])
 		GROUP BY c.public_model ORDER BY c.public_model`, pools)
 	if err != nil {
 		s.writeErr(w, 500, err.Error())

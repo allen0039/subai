@@ -111,10 +111,11 @@ func (s *Service) lookupKeyDB(ctx context.Context, hash string) (*KeyInfo, error
 		       COALESCE(us.concurrency_override,pv.concurrency_limit),
 		       COALESCE(us.allowed_models_override,pv.allowed_models),
 		       us.plan_version_id::text,
-		       COALESCE(pv.rate_multiplier,1)::text
+		       COALESCE(g.rate_multiplier,pv.rate_multiplier,1)::text
 		FROM api_keys k JOIN members m ON m.id = k.member_id
 		LEFT JOIN user_subscriptions us ON us.id=k.user_subscription_id AND us.member_id=k.member_id
 		LEFT JOIN plan_versions pv ON pv.id=us.plan_version_id
+		LEFT JOIN account_groups g ON g.id=COALESCE(us.service_group_id,pv.service_group_id)
 		WHERE k.key_hash = $1`, hash)
 	var k KeyInfo
 	var clientID, policyID, subscriptionID, subscriptionStatus, planVersionID *string

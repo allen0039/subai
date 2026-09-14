@@ -155,6 +155,8 @@ func (s *Server) Routes() http.Handler {
 		switch {
 		case len(parts) == 2 && parts[1] == "model-rules":
 			s.groupModelRules(w, r, parts[0])
+		case len(parts) == 2 && parts[1] == "model-routes":
+			s.serviceGroupModelRoutes(w, r, parts[0])
 		case len(parts) == 1 && r.Method == http.MethodPatch:
 			s.patchGroup(w, r, parts[0])
 		case len(parts) == 1 && r.Method == http.MethodDelete:
@@ -163,6 +165,46 @@ func (s *Server) Routes() http.Handler {
 			s.groupAddAccount(w, r, parts[0])
 		case len(parts) == 3 && parts[1] == "accounts" && r.Method == http.MethodDelete && resourceUUID.MatchString(parts[2]):
 			s.groupRemoveAccount(w, r, parts[0], parts[2])
+		default:
+			s.writeErr(w, 405, "method not allowed")
+		}
+	}))
+	// Service groups are the current API/product name.  Account-pool routes
+	// remain aliases for existing automation while operators migrate.
+	mux.Handle("/api/admin/service-groups", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			s.listGroups(w, r)
+		case http.MethodPost:
+			s.createGroup(w, r)
+		default:
+			s.writeErr(w, 405, "method not allowed")
+		}
+	}))
+	mux.Handle("/api/admin/service-groups/", s.RequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		rest := pathID(r, "/api/admin/service-groups/")
+		parts := strings.Split(rest, "/")
+		if len(parts) < 1 || !resourceUUID.MatchString(parts[0]) {
+			s.writeErr(w, 400, "invalid service group ID")
+			return
+		}
+		switch {
+		case len(parts) == 1 && r.Method == http.MethodPatch:
+			s.patchGroup(w, r, parts[0])
+		case len(parts) == 1 && r.Method == http.MethodDelete:
+			s.deleteGroup(w, r, parts[0])
+		case len(parts) == 2 && parts[1] == "accounts" && r.Method == http.MethodPost:
+			s.groupAddAccount(w, r, parts[0])
+		case len(parts) == 3 && parts[1] == "accounts" && r.Method == http.MethodDelete && resourceUUID.MatchString(parts[2]):
+			s.groupRemoveAccount(w, r, parts[0], parts[2])
+		case len(parts) == 2 && parts[1] == "model-rules":
+			s.groupModelRules(w, r, parts[0])
+		case len(parts) == 2 && parts[1] == "model-routes":
+			s.serviceGroupModelRoutes(w, r, parts[0])
+		case len(parts) == 2 && parts[1] == "models" && r.Method == http.MethodGet:
+			s.serviceGroupModelCandidates(w, r, parts[0])
+		case len(parts) == 3 && parts[1] == "models" && parts[2] == "sync" && r.Method == http.MethodPost:
+			s.syncServiceGroupModels(w, r, parts[0])
 		default:
 			s.writeErr(w, 405, "method not allowed")
 		}

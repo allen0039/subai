@@ -30,6 +30,7 @@ type planInput struct {
 	DefaultValidityDays int                 `json:"default_validity_days"`
 	Timezone            string              `json:"timezone"`
 	PoolIDs             []string            `json:"pool_ids"`
+	ServiceGroupID      string              `json:"service_group_id"`
 	ModelPricing        []modelPricingInput `json:"model_pricing"`
 }
 
@@ -148,8 +149,9 @@ func (s *Server) listPlans(w http.ResponseWriter, r *http.Request) {
 		SELECT p.id::text,p.name,p.description,p.status,COALESCE(p.current_version_id::text,''),p.version,p.created_at::text,
 		       COALESCE(v.version_number,0), COALESCE(v.daily_limit_usd::text,''), COALESCE(v.weekly_limit_usd::text,''), COALESCE(v.monthly_limit_usd::text,''),
 		       COALESCE(v.concurrency_limit,0), COALESCE(v.max_keys,0), v.allowed_models,
-		       COALESCE(v.default_validity_days,0), COALESCE(v.timezone,''), COALESCE(v.rate_multiplier,1)::text
-		FROM plans p LEFT JOIN plan_versions v ON v.id=p.current_version_id
+		       COALESCE(v.default_validity_days,0), COALESCE(v.timezone,''), COALESCE(v.rate_multiplier,1)::text,
+		       COALESCE(g.id::text,''),COALESCE(g.name,''),COALESCE(g.platform,''),COALESCE(g.subscription_type,'')
+		FROM plans p LEFT JOIN plan_versions v ON v.id=p.current_version_id LEFT JOIN account_groups g ON g.id=v.service_group_id
 		ORDER BY p.created_at DESC`)
 	if err != nil {
 		s.writeErr(w, 500, err.Error())
@@ -158,10 +160,10 @@ func (s *Server) listPlans(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, name, desc, status, versionID, created, daily, weekly, monthly, tz, rateMultiplier string
+		var id, name, desc, status, versionID, created, daily, weekly, monthly, tz, rateMultiplier, groupID, groupName, groupPlatform, groupType string
 		var planRowVersion, planVersion, concurrency, maxKeys, validity int
 		var models []string
-		if err := rows.Scan(&id, &name, &desc, &status, &versionID, &planRowVersion, &created, &planVersion, &daily, &weekly, &monthly, &concurrency, &maxKeys, &models, &validity, &tz, &rateMultiplier); err != nil {
+		if err := rows.Scan(&id, &name, &desc, &status, &versionID, &planRowVersion, &created, &planVersion, &daily, &weekly, &monthly, &concurrency, &maxKeys, &models, &validity, &tz, &rateMultiplier, &groupID, &groupName, &groupPlatform, &groupType); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
@@ -175,7 +177,7 @@ func (s *Server) listPlans(w http.ResponseWriter, r *http.Request) {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
-		out = append(out, map[string]any{"id": id, "name": name, "description": desc, "status": status, "current_version_id": versionID, "version": planRowVersion, "plan_version": planVersion, "created_at": created, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "rate_multiplier": rateMultiplier, "concurrency_limit": concurrency, "max_keys": maxKeys, "allowed_models": models, "default_validity_days": validity, "timezone": tz, "pools": pools, "model_pricing": modelPricing})
+		out = append(out, map[string]any{"id": id, "name": name, "description": desc, "status": status, "current_version_id": versionID, "version": planRowVersion, "plan_version": planVersion, "created_at": created, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "rate_multiplier": rateMultiplier, "concurrency_limit": concurrency, "max_keys": maxKeys, "allowed_models": models, "default_validity_days": validity, "timezone": tz, "service_group": map[string]any{"id": groupID, "name": groupName, "platform": groupPlatform, "subscription_type": groupType}, "pools": pools, "model_pricing": modelPricing})
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})
 }
@@ -252,20 +254,21 @@ func (s *Server) createPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	serviceGroupID, err := resolveSubscriptionServiceGroup(r, tx, in)
+	if err != nil {
+		s.writeErr(w, 400, err.Error())
+		return
+	}
 	var planID, versionID string
 	if err := tx.QueryRow(r.Context(), `INSERT INTO plans(name,description,created_by) VALUES($1,$2,$3) RETURNING id::text`, in.Name, in.Description, actorFrom(r)).Scan(&planID); err != nil {
 		s.writeErr(w, 409, err.Error())
 		return
 	}
 	if err := tx.QueryRow(r.Context(), `
-		INSERT INTO plan_versions(plan_id,version_number,daily_limit_usd,weekly_limit_usd,monthly_limit_usd,rate_multiplier,concurrency_limit,max_keys,allowed_models,default_validity_days,timezone,created_by)
-		VALUES($1,1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id::text`,
-		planID, daily, weekly, monthly, *in.RateMultiplier, in.ConcurrencyLimit, in.MaxKeys, in.AllowedModels, in.DefaultValidityDays, in.Timezone, actorFrom(r)).Scan(&versionID); err != nil {
+		INSERT INTO plan_versions(plan_id,version_number,service_group_id,daily_limit_usd,weekly_limit_usd,monthly_limit_usd,rate_multiplier,concurrency_limit,max_keys,allowed_models,default_validity_days,timezone,created_by)
+		VALUES($1,1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id::text`,
+		planID, serviceGroupID, daily, weekly, monthly, *in.RateMultiplier, in.ConcurrencyLimit, in.MaxKeys, nil, in.DefaultValidityDays, in.Timezone, actorFrom(r)).Scan(&versionID); err != nil {
 		s.writeErr(w, 500, err.Error())
-		return
-	}
-	if err := bindPools(r, tx, versionID, in.PoolIDs); err != nil {
-		s.writeErr(w, 400, err.Error())
 		return
 	}
 	if err := savePlanModelPricing(r, tx, versionID, in.ModelPricing); err != nil {
@@ -303,6 +306,24 @@ func bindPools(r *http.Request, tx pgx.Tx, versionID string, poolIDs []string) e
 	return nil
 }
 
+func resolveSubscriptionServiceGroup(r *http.Request, tx pgx.Tx, in planInput) (string, error) {
+	id := strings.TrimSpace(in.ServiceGroupID)
+	if id == "" && len(in.PoolIDs) == 1 {
+		id = in.PoolIDs[0]
+	} // temporary API compatibility
+	if !resourceUUID.MatchString(id) {
+		return "", fmt.Errorf("请选择一个订阅服务分组")
+	}
+	var status, kind string
+	if err := tx.QueryRow(r.Context(), `SELECT status,subscription_type FROM account_groups WHERE id=$1`, id).Scan(&status, &kind); err != nil {
+		return "", fmt.Errorf("订阅服务分组不存在")
+	}
+	if status != "active" || kind != "subscription" {
+		return "", fmt.Errorf("所选服务分组必须处于启用状态且类型为订阅服务")
+	}
+	return id, nil
+}
+
 func (s *Server) publishPlan(w http.ResponseWriter, r *http.Request, id string) {
 	var versionID string
 	if err := s.DB.Pool.QueryRow(r.Context(), `SELECT current_version_id::text FROM plans WHERE id=$1`, id).Scan(&versionID); err != nil || versionID == "" {
@@ -311,11 +332,14 @@ func (s *Server) publishPlan(w http.ResponseWriter, r *http.Request, id string) 
 	}
 	var healthy int
 	if err := s.DB.Pool.QueryRow(r.Context(), `
-		SELECT count(*) FROM plan_pool_bindings b JOIN account_groups g ON g.id=b.pool_id
+		SELECT count(*) FROM plan_versions v JOIN account_groups g ON g.id=v.service_group_id
 		JOIN account_group_members m ON m.group_id=g.id JOIN accounts a ON a.id=m.account_id
-		WHERE b.plan_version_id=$1 AND g.status='active' AND a.state='active'`, versionID).Scan(&healthy); err != nil || healthy == 0 {
-		s.writeErr(w, 409, "plan needs at least one active account in a bound account pool")
-		return
+		WHERE v.id=$1 AND g.status='active' AND g.subscription_type='subscription' AND a.state='active'`, versionID).Scan(&healthy); err != nil || healthy == 0 {
+		// Historical multi-pool versions remain publishable during migration.
+		if err := s.DB.Pool.QueryRow(r.Context(), `SELECT count(*) FROM plan_pool_bindings b JOIN account_groups g ON g.id=b.pool_id JOIN account_group_members m ON m.group_id=g.id JOIN accounts a ON a.id=m.account_id WHERE b.plan_version_id=$1 AND g.status='active' AND a.state='active'`, versionID).Scan(&healthy); err != nil || healthy == 0 {
+			s.writeErr(w, 409, "套餐需要绑定至少一个含有启用上游账号的订阅服务分组")
+			return
+		}
 	}
 	if _, err := s.DB.Pool.Exec(r.Context(), `UPDATE plans SET status='active',version=version+1,updated_at=now() WHERE id=$1`, id); err != nil {
 		s.writeErr(w, 500, err.Error())
@@ -348,18 +372,19 @@ func (s *Server) createPlanVersion(w http.ResponseWriter, r *http.Request, planI
 		return
 	}
 	defer tx.Rollback(r.Context())
+	serviceGroupID, err := resolveSubscriptionServiceGroup(r, tx, in)
+	if err != nil {
+		s.writeErr(w, 400, err.Error())
+		return
+	}
 	var n int
 	if err := tx.QueryRow(r.Context(), `SELECT COALESCE(MAX(version_number),0)+1 FROM plan_versions WHERE plan_id=$1`, planID).Scan(&n); err != nil {
 		s.writeErr(w, 404, "plan not found")
 		return
 	}
 	var versionID string
-	if err := tx.QueryRow(r.Context(), `INSERT INTO plan_versions(plan_id,version_number,daily_limit_usd,weekly_limit_usd,monthly_limit_usd,rate_multiplier,concurrency_limit,max_keys,allowed_models,default_validity_days,timezone,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id::text`, planID, n, daily, weekly, monthly, *in.RateMultiplier, in.ConcurrencyLimit, in.MaxKeys, in.AllowedModels, in.DefaultValidityDays, in.Timezone, actorFrom(r)).Scan(&versionID); err != nil {
+	if err := tx.QueryRow(r.Context(), `INSERT INTO plan_versions(plan_id,version_number,service_group_id,daily_limit_usd,weekly_limit_usd,monthly_limit_usd,rate_multiplier,concurrency_limit,max_keys,allowed_models,default_validity_days,timezone,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id::text`, planID, n, serviceGroupID, daily, weekly, monthly, *in.RateMultiplier, in.ConcurrencyLimit, in.MaxKeys, nil, in.DefaultValidityDays, in.Timezone, actorFrom(r)).Scan(&versionID); err != nil {
 		s.writeErr(w, 500, err.Error())
-		return
-	}
-	if err := bindPools(r, tx, versionID, in.PoolIDs); err != nil {
-		s.writeErr(w, 400, err.Error())
 		return
 	}
 	if err := savePlanModelPricing(r, tx, versionID, in.ModelPricing); err != nil {
@@ -415,7 +440,7 @@ func (s *Server) createSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 	var versionID string
 	var days int
-	var tz string
+	var tz, serviceGroupID string
 	if in.PlanVersionID != "" {
 		versionID = in.PlanVersionID
 	} else if resourceUUID.MatchString(in.PlanID) {
@@ -427,7 +452,7 @@ func (s *Server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, 400, "active plan required")
 		return
 	}
-	if err := s.DB.Pool.QueryRow(r.Context(), `SELECT default_validity_days,timezone FROM plan_versions WHERE id=$1`, versionID).Scan(&days, &tz); err != nil {
+	if err := s.DB.Pool.QueryRow(r.Context(), `SELECT COALESCE(g.default_validity_days,pv.default_validity_days),pv.timezone,COALESCE(pv.service_group_id::text,'') FROM plan_versions pv LEFT JOIN account_groups g ON g.id=pv.service_group_id WHERE pv.id=$1`, versionID).Scan(&days, &tz, &serviceGroupID); err != nil {
 		s.writeErr(w, 404, "plan version not found")
 		return
 	}
@@ -462,7 +487,7 @@ func (s *Server) createSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var id string
-	err = tx.QueryRow(r.Context(), `INSERT INTO user_subscriptions(member_id,plan_version_id,status,starts_at,expires_at,daily_limit_override,weekly_limit_override,monthly_limit_override,concurrency_override,max_keys_override,allowed_models_override,assigned_by,notes) VALUES($1,$2,CASE WHEN $3>now() THEN 'scheduled' ELSE 'active' END,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id::text`, in.MemberID, versionID, starts, expires, daily, weekly, monthly, in.ConcurrencyOverride, in.MaxKeysOverride, in.AllowedModelsOverride, actorFrom(r), in.Notes).Scan(&id)
+	err = tx.QueryRow(r.Context(), `INSERT INTO user_subscriptions(member_id,plan_version_id,service_group_id,status,starts_at,expires_at,daily_limit_override,weekly_limit_override,monthly_limit_override,concurrency_override,max_keys_override,allowed_models_override,assigned_by,notes) VALUES($1,$2,NULLIF($3,'')::uuid,CASE WHEN $4>now() THEN 'scheduled' ELSE 'active' END,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id::text`, in.MemberID, versionID, serviceGroupID, starts, expires, daily, weekly, monthly, in.ConcurrencyOverride, in.MaxKeysOverride, in.AllowedModelsOverride, actorFrom(r), in.Notes).Scan(&id)
 	if err != nil {
 		s.writeErr(w, 409, err.Error())
 		return
@@ -482,7 +507,7 @@ func (s *Server) createSubscription(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) addSubscriptionPolicies(r *http.Request, tx pgx.Tx, subID, versionID string, daily, weekly, monthly any, tz, actor string) error {
 	var baseDaily, baseWeekly, baseMonthly *string
-	if err := tx.QueryRow(r.Context(), `SELECT daily_limit_usd::text,weekly_limit_usd::text,monthly_limit_usd::text FROM plan_versions WHERE id=$1`, versionID).Scan(&baseDaily, &baseWeekly, &baseMonthly); err != nil {
+	if err := tx.QueryRow(r.Context(), `SELECT COALESCE(g.daily_limit_usd,v.daily_limit_usd)::text,COALESCE(g.weekly_limit_usd,v.weekly_limit_usd)::text,COALESCE(g.monthly_limit_usd,v.monthly_limit_usd)::text FROM plan_versions v LEFT JOIN account_groups g ON g.id=v.service_group_id WHERE v.id=$1`, versionID).Scan(&baseDaily, &baseWeekly, &baseMonthly); err != nil {
 		return err
 	}
 	values := []struct {
@@ -515,9 +540,10 @@ func (s *Server) listSubscriptions(w http.ResponseWriter, r *http.Request, membe
 	rows, err := s.DB.Pool.Query(r.Context(), `
 		SELECT us.id::text,us.member_id::text,m.name,p.id::text,p.name,pv.id::text,pv.version_number,us.status,us.starts_at::text,us.expires_at::text,
 		COALESCE(us.concurrency_override,pv.concurrency_limit),COALESCE(us.max_keys_override,pv.max_keys),
-		COALESCE(COALESCE(us.daily_limit_override,pv.daily_limit_usd)::text,''),COALESCE(COALESCE(us.weekly_limit_override,pv.weekly_limit_usd)::text,''),COALESCE(COALESCE(us.monthly_limit_override,pv.monthly_limit_usd)::text,''),
-		COALESCE(us.allowed_models_override,pv.allowed_models),pv.rate_multiplier::text,us.version,us.notes
-		FROM user_subscriptions us JOIN members m ON m.id=us.member_id JOIN plan_versions pv ON pv.id=us.plan_version_id JOIN plans p ON p.id=pv.plan_id `+where+` ORDER BY us.expires_at DESC`, args...)
+		COALESCE(COALESCE(us.daily_limit_override,g.daily_limit_usd,pv.daily_limit_usd)::text,''),COALESCE(COALESCE(us.weekly_limit_override,g.weekly_limit_usd,pv.weekly_limit_usd)::text,''),COALESCE(COALESCE(us.monthly_limit_override,g.monthly_limit_usd,pv.monthly_limit_usd)::text,''),
+		COALESCE(us.allowed_models_override,pv.allowed_models),COALESCE(g.rate_multiplier,pv.rate_multiplier,1)::text,us.version,us.notes,
+		COALESCE(g.id::text,''),COALESCE(g.name,''),COALESCE(g.platform,'')
+		FROM user_subscriptions us JOIN members m ON m.id=us.member_id JOIN plan_versions pv ON pv.id=us.plan_version_id JOIN plans p ON p.id=pv.plan_id LEFT JOIN account_groups g ON g.id=COALESCE(us.service_group_id,pv.service_group_id) `+where+` ORDER BY us.expires_at DESC`, args...)
 	if err != nil {
 		s.writeErr(w, 500, err.Error())
 		return
@@ -525,14 +551,14 @@ func (s *Server) listSubscriptions(w http.ResponseWriter, r *http.Request, membe
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, mid, memberName, pid, pname, vid, status, starts, expires, daily, weekly, monthly, rateMultiplier, notes string
+		var id, mid, memberName, pid, pname, vid, status, starts, expires, daily, weekly, monthly, rateMultiplier, notes, groupID, groupName, groupPlatform string
 		var pv, conc, max, version int
 		var models []string
-		if err := rows.Scan(&id, &mid, &memberName, &pid, &pname, &vid, &pv, &status, &starts, &expires, &conc, &max, &daily, &weekly, &monthly, &models, &rateMultiplier, &version, &notes); err != nil {
+		if err := rows.Scan(&id, &mid, &memberName, &pid, &pname, &vid, &pv, &status, &starts, &expires, &conc, &max, &daily, &weekly, &monthly, &models, &rateMultiplier, &version, &notes, &groupID, &groupName, &groupPlatform); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
-		out = append(out, map[string]any{"id": id, "member_id": mid, "member_name": memberName, "plan_id": pid, "plan_name": pname, "plan_version_id": vid, "plan_version": pv, "status": availability(status, starts, expires), "starts_at": starts, "expires_at": expires, "concurrency_limit": conc, "max_keys": max, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "rate_multiplier": rateMultiplier, "allowed_models": models, "version": version, "notes": notes})
+		out = append(out, map[string]any{"id": id, "member_id": mid, "member_name": memberName, "plan_id": pid, "plan_name": pname, "plan_version_id": vid, "plan_version": pv, "status": availability(status, starts, expires), "starts_at": starts, "expires_at": expires, "concurrency_limit": conc, "max_keys": max, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "rate_multiplier": rateMultiplier, "allowed_models": models, "service_group": map[string]any{"id": groupID, "name": groupName, "platform": groupPlatform}, "version": version, "notes": notes})
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})
 }

@@ -609,6 +609,9 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	limit, offset, _ := pageParams(r, []string{"created_at", "name"})
 	rows, err := s.DB.Pool.Query(r.Context(), `
 		SELECT g.id::text, g.name, g.description, g.strategy, g.status, g.version,
+		       g.platform,g.subscription_type,COALESCE(g.rate_multiplier,1)::text,
+		       COALESCE(g.daily_limit_usd::text,''),COALESCE(g.weekly_limit_usd::text,''),COALESCE(g.monthly_limit_usd::text,''),
+		       g.default_validity_days,g.model_allowlist_enabled,
 		       COALESCE((SELECT array_agg(a.label ORDER BY a.priority,a.id) FROM account_group_members m
 		                 JOIN accounts a ON a.id=m.account_id WHERE m.group_id=g.id), '{}'),
 		       COALESCE((SELECT array_agg(a.id::text ORDER BY a.priority,a.id) FROM account_group_members m
@@ -621,23 +624,32 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, name, description, strategy, status string
-		var version int
+		var id, name, description, strategy, status, platform, subscriptionType, multiplier, daily, weekly, monthly string
+		var version, validity int
+		var allowlist bool
 		var accountsList, accountIDs []string
-		if err := rows.Scan(&id, &name, &description, &strategy, &status, &version, &accountsList, &accountIDs); err != nil {
+		if err := rows.Scan(&id, &name, &description, &strategy, &status, &version, &platform, &subscriptionType, &multiplier, &daily, &weekly, &monthly, &validity, &allowlist, &accountsList, &accountIDs); err != nil {
 			s.writeErr(w, 500, err.Error())
 			return
 		}
-		out = append(out, map[string]any{"id": id, "name": name, "description": description, "strategy": strategy, "status": status, "version": version, "accounts": accountsList, "account_ids": accountIDs})
+		out = append(out, map[string]any{"id": id, "name": name, "description": description, "strategy": strategy, "status": status, "version": version, "platform": platform, "subscription_type": subscriptionType, "rate_multiplier": multiplier, "daily_limit_usd": daily, "weekly_limit_usd": weekly, "monthly_limit_usd": monthly, "default_validity_days": validity, "model_allowlist_enabled": allowlist, "accounts": accountsList, "account_ids": accountIDs})
 	}
 	s.writeJSON(w, 200, map[string]any{"data": out})
 }
 
 func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Strategy    string `json:"strategy"`
+		Name                  string  `json:"name"`
+		Description           string  `json:"description"`
+		Strategy              string  `json:"strategy"`
+		Platform              string  `json:"platform"`
+		SubscriptionType      string  `json:"subscription_type"`
+		RateMultiplier        string  `json:"rate_multiplier"`
+		DailyLimitUSD         *string `json:"daily_limit_usd"`
+		WeeklyLimitUSD        *string `json:"weekly_limit_usd"`
+		MonthlyLimitUSD       *string `json:"monthly_limit_usd"`
+		DefaultValidityDays   int     `json:"default_validity_days"`
+		ModelAllowlistEnabled bool    `json:"model_allowlist_enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 		s.writeErr(w, 400, "name required")
@@ -650,9 +662,46 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, 400, "strategy must be round_robin, weighted_round_robin or priority_failover")
 		return
 	}
+	if req.Platform == "" {
+		req.Platform = "codex"
+	}
+	if !validServicePlatform(req.Platform) {
+		s.writeErr(w, 400, "invalid service platform")
+		return
+	}
+	if req.SubscriptionType == "" {
+		req.SubscriptionType = "standard"
+	}
+	if req.SubscriptionType != "standard" && req.SubscriptionType != "subscription" {
+		s.writeErr(w, 400, "invalid subscription type")
+		return
+	}
+	if req.DefaultValidityDays <= 0 {
+		req.DefaultValidityDays = 30
+	}
+	multiplier, err := serviceMoney(req.RateMultiplier, "1")
+	if err != nil {
+		s.writeErr(w, 400, err.Error())
+		return
+	}
+	daily, err := serviceNullableMoney(req.DailyLimitUSD)
+	if err != nil {
+		s.writeErr(w, 400, err.Error())
+		return
+	}
+	weekly, err := serviceNullableMoney(req.WeeklyLimitUSD)
+	if err != nil {
+		s.writeErr(w, 400, err.Error())
+		return
+	}
+	monthly, err := serviceNullableMoney(req.MonthlyLimitUSD)
+	if err != nil {
+		s.writeErr(w, 400, err.Error())
+		return
+	}
 	var id string
 	if err := s.DB.Pool.QueryRow(r.Context(),
-		`INSERT INTO account_groups(name,description,strategy) VALUES($1,$2,$3) RETURNING id::text`, req.Name, req.Description, req.Strategy).Scan(&id); err != nil {
+		`INSERT INTO account_groups(name,description,strategy,platform,subscription_type,rate_multiplier,daily_limit_usd,weekly_limit_usd,monthly_limit_usd,default_validity_days,model_allowlist_enabled) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id::text`, req.Name, req.Description, req.Strategy, req.Platform, req.SubscriptionType, multiplier, daily, weekly, monthly, req.DefaultValidityDays, req.ModelAllowlistEnabled).Scan(&id); err != nil {
 		s.writeErr(w, 409, err.Error())
 		return
 	}
@@ -663,11 +712,19 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
-		Name        *string `json:"name"`
-		Description *string `json:"description"`
-		Strategy    *string `json:"strategy"`
-		Status      *string `json:"status"`
-		Version     int     `json:"version"`
+		Name                  *string `json:"name"`
+		Description           *string `json:"description"`
+		Strategy              *string `json:"strategy"`
+		Status                *string `json:"status"`
+		Platform              *string `json:"platform"`
+		SubscriptionType      *string `json:"subscription_type"`
+		RateMultiplier        *string `json:"rate_multiplier"`
+		DailyLimitUSD         *string `json:"daily_limit_usd"`
+		WeeklyLimitUSD        *string `json:"weekly_limit_usd"`
+		MonthlyLimitUSD       *string `json:"monthly_limit_usd"`
+		DefaultValidityDays   *int    `json:"default_validity_days"`
+		ModelAllowlistEnabled *bool   `json:"model_allowlist_enabled"`
+		Version               int     `json:"version"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || expectVersion(req.Version) != nil {
 		s.writeErr(w, http.StatusBadRequest, "version required")
@@ -692,12 +749,65 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request, id string) {
 		s.writeErr(w, http.StatusBadRequest, "invalid status")
 		return
 	}
+	if req.Platform != nil && !validServicePlatform(*req.Platform) {
+		s.writeErr(w, 400, "invalid service platform")
+		return
+	}
+	if req.Platform != nil {
+		var incompatible int
+		err := s.DB.Pool.QueryRow(r.Context(), `SELECT count(*) FROM account_group_members m JOIN accounts a ON a.id=m.account_id WHERE m.group_id=$1 AND (($2='composite') OR ($2='codex' AND a.provider<>'codex') OR ($2='openai_compatible' AND a.provider<>'openai_compatible') OR ($2 IN ('anthropic','gemini')))`, id, *req.Platform).Scan(&incompatible)
+		if err != nil {
+			s.writeErr(w, 500, err.Error())
+			return
+		}
+		if incompatible > 0 {
+			s.writeErr(w, 409, "该服务分组已包含不兼容的上游账号；请先移除账号后再更改平台")
+			return
+		}
+	}
+	if req.SubscriptionType != nil && *req.SubscriptionType != "standard" && *req.SubscriptionType != "subscription" {
+		s.writeErr(w, 400, "invalid subscription type")
+		return
+	}
+	if req.DefaultValidityDays != nil && *req.DefaultValidityDays <= 0 {
+		s.writeErr(w, 400, "default validity must be positive")
+		return
+	}
+	var multiplier any
+	if req.RateMultiplier != nil {
+		value, err := serviceMoney(*req.RateMultiplier, "1")
+		if err != nil {
+			s.writeErr(w, 400, err.Error())
+			return
+		}
+		multiplier = value
+	}
+	daily, err := serviceNullableMoney(req.DailyLimitUSD)
+	if err != nil {
+		s.writeErr(w, 400, err.Error())
+		return
+	}
+	weekly, err := serviceNullableMoney(req.WeeklyLimitUSD)
+	if err != nil {
+		s.writeErr(w, 400, err.Error())
+		return
+	}
+	monthly, err := serviceNullableMoney(req.MonthlyLimitUSD)
+	if err != nil {
+		s.writeErr(w, 400, err.Error())
+		return
+	}
 	tag, err := s.DB.Pool.Exec(r.Context(), `
 		UPDATE account_groups SET
 			name=COALESCE($2,name), description=COALESCE($3,description),
 			strategy=COALESCE($4,strategy), status=COALESCE($5,status),
+			platform=COALESCE($6,platform),subscription_type=COALESCE($7,subscription_type),rate_multiplier=COALESCE($8,rate_multiplier),
+			daily_limit_usd=CASE WHEN $9::text IS NULL THEN daily_limit_usd ELSE NULLIF($9::text,'')::numeric END,
+			weekly_limit_usd=CASE WHEN $10::text IS NULL THEN weekly_limit_usd ELSE NULLIF($10::text,'')::numeric END,
+			monthly_limit_usd=CASE WHEN $11::text IS NULL THEN monthly_limit_usd ELSE NULLIF($11::text,'')::numeric END,
+			default_validity_days=COALESCE($12,default_validity_days),model_allowlist_enabled=COALESCE($13,model_allowlist_enabled),
 			version=version+1, updated_at=now()
-		WHERE id=$1 AND version=$6`, id, req.Name, req.Description, req.Strategy, req.Status, req.Version)
+		WHERE id=$1 AND version=$14`, id, req.Name, req.Description, req.Strategy, req.Status, req.Platform, req.SubscriptionType, multiplier, daily, weekly, monthly, req.DefaultValidityDays, req.ModelAllowlistEnabled, req.Version)
 	if err != nil {
 		s.writeErr(w, http.StatusConflict, err.Error())
 		return
@@ -725,6 +835,15 @@ func (s *Server) groupAddAccount(w http.ResponseWriter, r *http.Request, groupID
 	if req.Weight <= 0 {
 		req.Weight = 1
 	}
+	var platform, provider string
+	if err := s.DB.Pool.QueryRow(r.Context(), `SELECT g.platform,a.provider FROM account_groups g JOIN accounts a ON a.id=$2 WHERE g.id=$1`, groupID, req.AccountID).Scan(&platform, &provider); err != nil {
+		s.writeErr(w, 404, "service group or account not found")
+		return
+	}
+	if platform == "composite" || (platform == "codex" && provider != "codex") || (platform == "openai_compatible" && provider != "openai_compatible") {
+		s.writeErr(w, 400, "账号上游类型与服务分组平台不匹配")
+		return
+	}
 	if _, err := s.DB.Pool.Exec(r.Context(),
 		`INSERT INTO account_group_members(group_id, account_id, weight, priority) VALUES($1,$2,$3,$4)
 		 ON CONFLICT (group_id,account_id) DO UPDATE SET weight=EXCLUDED.weight, priority=EXCLUDED.priority`,
@@ -736,6 +855,37 @@ func (s *Server) groupAddAccount(w http.ResponseWriter, r *http.Request, groupID
 	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "group.add_account", "account_group", groupID,
 		map[string]any{"account_id": req.AccountID}, "")
 	s.writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func validServicePlatform(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "codex", "openai_compatible", "anthropic", "gemini", "composite":
+		return true
+	}
+	return false
+}
+
+func serviceMoney(value, fallback string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = fallback
+	}
+	d, err := strconv.ParseFloat(value, 64)
+	if err != nil || d < 0 {
+		return "", fmt.Errorf("金额或倍率必须是非负数字")
+	}
+	return fmt.Sprintf("%.12f", d), nil
+}
+
+func serviceNullableMoney(value *string) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	v := strings.TrimSpace(*value)
+	if v == "" {
+		return "", nil
+	}
+	return serviceMoney(v, "0")
 }
 
 func (s *Server) keyRoutes(w http.ResponseWriter, r *http.Request, keyID string) {

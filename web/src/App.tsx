@@ -484,24 +484,43 @@ const egressPage = () => (
 
 const groupsPage = () => (
   <ResourcePage
-    title="账号池"
-    basePath="/api/admin/account-pools"
+    title="服务分组"
+    basePath="/api/admin/service-groups"
     columns={[
       { name: "name", label: "名称" },
+      { name: "platform", label: "上游平台", render: (r) => r.platform === "codex" ? "Codex" : r.platform === "openai_compatible" ? "OpenAI 兼容" : r.platform === "composite" ? "组合分组" : r.platform },
+      { name: "subscription_type", label: "用途", render: (r) => r.subscription_type === "subscription" ? "订阅服务" : "内部服务" },
       { name: "description", label: "说明", render: (r) => r.description || "—" },
       { name: "strategy", label: "调度", render: (r) => <Badge value={r.strategy ?? "round_robin"} /> },
+      { name: "model_allowlist_enabled", label: "模型范围", render: (r) => r.model_allowlist_enabled ? "仅白名单" : "全部已同步模型" },
       statusCol,
       { name: "accounts", label: "账号", render: (r) => (r.accounts ?? []).join("、") || "—" },
     ]}
     createFields={[
-      { name: "name", label: "账号池名称", required: true },
+      { name: "name", label: "服务分组名称", required: true },
       { name: "description", label: "说明", kind: "textarea" },
+      { name: "platform", label: "上游平台", kind: "select", options: [{value:"codex",label:"Codex"},{value:"openai_compatible",label:"OpenAI 兼容"},{value:"anthropic",label:"Anthropic"},{value:"gemini",label:"Gemini"},{value:"composite",label:"组合分组"}], default: "codex" },
+      { name: "subscription_type", label: "用途", kind: "select", options: [{value:"subscription",label:"订阅服务"},{value:"standard",label:"内部服务"}], default: "subscription", help: "订阅套餐只能绑定订阅服务分组。" },
       { name: "strategy", label: "调度策略", kind: "select", options: ["round_robin", "weighted_round_robin", "priority_failover"], default: "round_robin" },
+      { name: "rate_multiplier", label: "计费倍率", kind: "number", min: 0, step: 0.01, default: 1, help: "服务分组的倍率优先于历史套餐倍率。" },
+      { name: "daily_limit_usd", label: "每日额度（美元）", kind: "number", min: 0, step: 0.01, placeholder: "留空表示不限" },
+      { name: "weekly_limit_usd", label: "每周额度（美元）", kind: "number", min: 0, step: 0.01, placeholder: "留空表示不限" },
+      { name: "monthly_limit_usd", label: "每月额度（美元）", kind: "number", min: 0, step: 0.01, placeholder: "留空表示不限" },
+      { name: "default_validity_days", label: "默认有效天数", kind: "number", min: 1, default: 30 },
+      { name: "model_allowlist_enabled", label: "仅允许模型白名单", kind: "checkbox", default: false },
     ]}
     editFields={[
-      { name: "name", label: "账号池名称", required: true },
+      { name: "name", label: "服务分组名称", required: true },
       { name: "description", label: "说明", kind: "textarea" },
+      { name: "platform", label: "上游平台", kind: "select", options: [{value:"codex",label:"Codex"},{value:"openai_compatible",label:"OpenAI 兼容"},{value:"anthropic",label:"Anthropic"},{value:"gemini",label:"Gemini"},{value:"composite",label:"组合分组"}] },
+      { name: "subscription_type", label: "用途", kind: "select", options: [{value:"subscription",label:"订阅服务"},{value:"standard",label:"内部服务"}] },
       { name: "strategy", label: "调度策略", kind: "select", options: ["round_robin", "weighted_round_robin", "priority_failover"] },
+      { name: "rate_multiplier", label: "计费倍率", kind: "number", min: 0, step: 0.01 },
+      { name: "daily_limit_usd", label: "每日额度（美元）", kind: "number", min: 0, step: 0.01, placeholder: "留空表示不限" },
+      { name: "weekly_limit_usd", label: "每周额度（美元）", kind: "number", min: 0, step: 0.01, placeholder: "留空表示不限" },
+      { name: "monthly_limit_usd", label: "每月额度（美元）", kind: "number", min: 0, step: 0.01, placeholder: "留空表示不限" },
+      { name: "default_validity_days", label: "默认有效天数", kind: "number", min: 1 },
+      { name: "model_allowlist_enabled", label: "仅允许模型白名单", kind: "checkbox" },
       { name: "status", label: "状态", kind: "select", options: ["active", "disabled"] },
     ]}
     notice={<GroupAddForm />}
@@ -509,7 +528,24 @@ const groupsPage = () => (
   />
 );
 
-const GroupAddForm: React.FC = () => <span className="muted small">账号可加入多个池；账号池变更会实时影响已绑定套餐。</span>;
+const GroupAddForm: React.FC = () => <span className="muted small">账号能力、模型同步、映射和白名单都属于服务分组；套餐不再直接绑定账号。</span>;
+
+const ServiceGroupModels: React.FC<{ row:any; reload:()=>void }> = ({row,reload}) => {
+  const [open,setOpen] = React.useState(false), [models,setModels] = React.useState<any[]>([]), [rules,setRules] = React.useState<any[]>([]), [routes,setRoutes] = React.useState<any[]>([]), [targets,setTargets] = React.useState<any[]>([]), [busy,setBusy] = React.useState(false), [error,setError] = React.useState(""), [routeForm,setRouteForm] = React.useState({public_model:"",target_group_id:"",upstream_model:""});
+  const load = async () => { try { const [candidate,configured,mapped,groupList] = await Promise.all([api.get<any>(`/api/admin/service-groups/${row.id}/models`),api.get<any>(`/api/admin/service-groups/${row.id}/model-rules`),api.get<any>(`/api/admin/service-groups/${row.id}/model-routes`),api.get<any>("/api/admin/service-groups")]); setModels(candidate.data ?? []); setRules(configured.data ?? []); setRoutes(mapped.data ?? []); const concrete=(groupList.data ?? []).filter((group:any) => group.id !== row.id && group.status === "active" && group.platform !== "composite"); setTargets(concrete); setRouteForm(current => ({...current,target_group_id:current.target_group_id || concrete[0]?.id || ""})); setError(""); } catch (e) { setError(errorText(e)); } };
+  const show = async () => { setOpen(true); await load(); };
+  const sync = async () => { setBusy(true); try { await api.post(`/api/admin/service-groups/${row.id}/models/sync`); await load(); reload(); } catch (e) { setError(errorText(e)); } finally { setBusy(false); } };
+  const toggle = async (model:string, checked:boolean) => { try { await api.post(`/api/admin/service-groups/${row.id}/model-rules`,{public_model:model,status:checked ? "active" : "disabled"}); await load(); } catch (e) { setError(errorText(e)); } };
+  const saveRoute = async () => { try { await api.post(`/api/admin/service-groups/${row.id}/model-routes`,routeForm); setRouteForm({public_model:"",target_group_id:targets[0]?.id ?? "",upstream_model:""}); await load(); } catch (e) { setError(errorText(e)); } };
+  const deleteRoute = async (model:string) => { try { await api.del(`/api/admin/service-groups/${row.id}/model-routes?model=${encodeURIComponent(model)}`); await load(); } catch (e) { setError(errorText(e)); } };
+  const active = new Set(rules.filter(rule => rule.status === "active").map(rule => rule.public_model));
+  return <><button className="btn small" onClick={show}>模型配置</button>{open && <Modal className="plan-modal" title={`模型配置 · ${row.name}`} onClose={() => setOpen(false)} onSubmit={row.platform === "composite" ? () => setOpen(false) : sync} submitLabel={row.platform === "composite" ? "完成" : busy ? "正在同步…" : "同步上游模型"} submitDisabled={busy}>
+    <p className="muted">模型由服务分组内已启用账号的实际能力决定，计费目录不会参与候选模型。{row.model_allowlist_enabled ? "当前已启用白名单，仅勾选模型可被调用。" : "当前未启用白名单，所有已同步模型都可被调用。"}</p>
+    {row.platform === "composite" ? <section className="section-card"><div className="section-title"><h2>组合模型路由</h2><span className="muted small">每个公开模型明确指向一个具体服务分组。</span></div><div className="form-grid"><label className="field"><span className="field-label">公开模型</span><input value={routeForm.public_model} placeholder="例如：gpt-5.6" onChange={e=>setRouteForm({...routeForm,public_model:e.target.value})}/></label><label className="field"><span className="field-label">目标服务分组</span><select value={routeForm.target_group_id} onChange={e=>setRouteForm({...routeForm,target_group_id:e.target.value})}>{targets.map(target=><option key={target.id} value={target.id}>{target.name} · {target.platform}</option>)}</select></label><label className="field"><span className="field-label">目标上游模型（可选）</span><input value={routeForm.upstream_model} placeholder="留空沿用公开模型" onChange={e=>setRouteForm({...routeForm,upstream_model:e.target.value})}/></label></div><button type="button" className="btn small primary" disabled={!routeForm.public_model || !routeForm.target_group_id} onClick={saveRoute}>保存模型路由</button>{routes.length ? <table className="tbl"><thead><tr><th>公开模型</th><th>目标分组</th><th>目标模型</th><th/></tr></thead><tbody>{routes.map(route=><tr key={route.id}><td>{route.public_model}</td><td>{targets.find(target=>target.id===route.target_group_id)?.name ?? route.target_group_id}</td><td>{route.upstream_model || route.public_model}</td><td><button type="button" className="btn small danger" onClick={()=>deleteRoute(route.public_model)}>删除</button></td></tr>)}</tbody></table> : <div className="empty-state">尚未添加模型路由。</div>}</section> : <div className="model-check-list">{models.length ? models.map(model => <label key={model.model}><input type="checkbox" disabled={!row.model_allowlist_enabled} checked={active.has(model.model)} onChange={e => toggle(model.model,e.target.checked)}/><span>{model.model}</span><small>由 {model.account_count} 个启用账号支持</small></label>) : <div className="empty-state">尚未同步到上游模型。确认账号授权和出口策略后点击“同步上游模型”。</div>}</div>}
+    {row.model_allowlist_enabled && !models.length && <p className="muted small">请先同步模型，再勾选白名单。若需要关闭白名单，请编辑服务分组。</p>}
+    {error && <div className="error">{error}</div>}
+  </Modal>}</>;
+};
 
 const GroupRowActions: React.FC<{ row: any; reload: () => void }> = ({ row, reload }) => {
   const [accounts, setAccounts] = React.useState<any[]>([]);
@@ -517,13 +553,14 @@ const GroupRowActions: React.FC<{ row: any; reload: () => void }> = ({ row, relo
   const [error, setError] = React.useState("");
   React.useEffect(() => {
     api.get<any>("/api/admin/accounts?limit=100").then(r => {
-      const rows = (r.data ?? []).filter((account: any) => account.state === "active");
+      const rows = (r.data ?? []).filter((account: any) => account.state === "active" && (row.platform === "composite" ? false : account.provider === row.platform));
       setAccounts(rows);
       setAccountId(rows[0]?.id ?? "");
     }).catch(e => setError(errorText(e)));
   }, []);
   return (
     <span className="inline-actions">
+      <ServiceGroupModels row={row} reload={reload}/>
       <select aria-label="选择要添加的账号"
         value={accountId}
         onChange={(e) => setAccountId(e.target.value)}
@@ -535,7 +572,7 @@ const GroupRowActions: React.FC<{ row: any; reload: () => void }> = ({ row, relo
         className="btn small"
         onClick={async () => {
           if (!accountId) return;
-          try { await api.post(`/api/admin/account-pools/${row.id}/accounts`, { account_id: accountId }); reload(); }
+          try { await api.post(`/api/admin/service-groups/${row.id}/accounts`, { account_id: accountId }); reload(); }
           catch (e) { setError(errorText(e)); }
         }}
       >
@@ -546,8 +583,8 @@ const GroupRowActions: React.FC<{ row: any; reload: () => void }> = ({ row, relo
         className="btn small"
         title={`从账号池移除“${row.accounts?.[index] ?? "账号"}”`}
         onClick={async () => {
-          if (!confirm(`确认从账号池“${row.name}”移除账号“${row.accounts?.[index] ?? "该账号"}”？`)) return;
-          try { await api.del(`/api/admin/account-pools/${row.id}/accounts/${id}`); reload(); }
+          if (!confirm(`确认从服务分组“${row.name}”移除账号“${row.accounts?.[index] ?? "该账号"}”？`)) return;
+          try { await api.del(`/api/admin/service-groups/${row.id}/accounts/${id}`); reload(); }
           catch (e) { setError(errorText(e)); }
         }}
       >
@@ -556,12 +593,12 @@ const GroupRowActions: React.FC<{ row: any; reload: () => void }> = ({ row, relo
       <button
         className="btn small danger"
         onClick={async () => {
-          if (!confirm(`确认删除账号池“${row.name}”？`)) return;
-          try { await api.del(`/api/admin/account-pools/${row.id}`); reload(); }
+          if (!confirm(`确认删除服务分组“${row.name}”？`)) return;
+          try { await api.del(`/api/admin/service-groups/${row.id}`); reload(); }
           catch (e) { setError(errorText(e)); }
         }}
       >
-        删除账号池
+        删除服务分组
       </button>
       {error && <span className="error small">{error}</span>}
     </span>
@@ -984,7 +1021,7 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
   ] },
   { label: "资源池", items: [
     { key: "#/accounts", label: "上游账号", page: accountsPage },
-    { key: "#/pools", label: "账号池", page: groupsPage },
+    { key: "#/pools", label: "服务分组", page: groupsPage },
     { key: "#/proxies", label: "代理出口", page: proxiesPage },
   ] },
   { label: "策略", items: [
