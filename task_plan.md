@@ -82,3 +82,9 @@
 
 ## 2026-09-14 应用到 main
 按用户要求，将已验证的隔离工作区源码应用到 main：4105 个变更路径逐项内容及权限核对一致。额外迁入 docs/subai 文档并修正忽略规则，保留 GPT 原登录方案；未提交、推送、部署或迁移旧数据库。此前 main 保留旧运行时代码的记录为历史状态。
+
+
+## 2026-09-15 Console simplification
+Scope: remove onboarding and administrator compliance gate; remove login agreement, model plaza and all platform social login settings/entry points. Keep password login and original GPT upstream OAuth. Plan: implement frontend/backend changes, run targeted tests/build and browser verification, publish image and update Oracle3 on port 18080 with existing new database retained.
+
+Console simplification phases: implementation complete; source checks complete; image publish and live browser validation in progress.

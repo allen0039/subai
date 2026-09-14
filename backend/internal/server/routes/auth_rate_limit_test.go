@@ -56,7 +56,6 @@ func TestAuthRoutesRateLimitFailCloseWhenRedisUnavailable(t *testing.T) {
 		"/api/v1/auth/login",
 		"/api/v1/auth/login/2fa",
 		"/api/v1/auth/send-verify-code",
-		"/api/v1/auth/oauth/pending/send-verify-code",
 	}
 
 	for _, path := range paths {
@@ -69,5 +68,21 @@ func TestAuthRoutesRateLimitFailCloseWhenRedisUnavailable(t *testing.T) {
 
 		require.Equal(t, http.StatusTooManyRequests, w.Code, "path=%s", path)
 		require.Contains(t, w.Body.String(), "rate limit exceeded", "path=%s", path)
+	}
+}
+
+func TestSubAI_RemovedPlatformOAuthRoutes(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = rdb.Close() })
+	router := newAuthRoutesTestRouter(rdb)
+	for _, provider := range []string{"linuxdo", "github", "google", "wechat", "dingtalk", "oidc", "pending"} {
+		for _, action := range []string{"start", "callback", "complete-registration", "bind-login", "create-account", "exchange", "send-verify-code"} {
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				path := "/api/v1/auth/oauth/" + provider + "/" + action
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, httptest.NewRequest(method, path, nil))
+				require.Equal(t, http.StatusNotFound, w.Code, "%s %s", method, path)
+			}
+		}
 	}
 }

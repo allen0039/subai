@@ -131,14 +131,14 @@ describe('HomeView compact mode', () => {
     expect(appStore.fetchPublicSettings).not.toHaveBeenCalled()
   })
 
-  it('shows the model plaza link to anonymous visitors when public access is enabled', () => {
+  it('hides the removed model plaza link to anonymous visitors when public access is enabled', () => {
     const wrapper = mountHome({
       compact_home_enabled: true,
       model_plaza_enabled: true,
       model_plaza_require_auth: false,
     })
 
-    expect(modelPlazaDestination(wrapper)).toBe('/model-plaza')
+    expect(modelPlazaDestination(wrapper)).toBeUndefined()
   })
 
   it('hides the model plaza link from anonymous visitors when sign-in is required', () => {
@@ -151,7 +151,7 @@ describe('HomeView compact mode', () => {
     expect(modelPlazaDestination(wrapper)).toBeUndefined()
   })
 
-  it('shows the model plaza link to authenticated visitors when sign-in is required', () => {
+  it('hides the removed model plaza link to authenticated visitors when sign-in is required', () => {
     authStore.isAuthenticated = true
 
     const wrapper = mountHome({
@@ -160,16 +160,16 @@ describe('HomeView compact mode', () => {
       model_plaza_require_auth: true,
     })
 
-    expect(modelPlazaDestination(wrapper)).toBe('/model-plaza')
+    expect(modelPlazaDestination(wrapper)).toBeUndefined()
   })
 
-  it('shows the model plaza link in the default home header', () => {
+  it('hides the removed model plaza link in the default home header', () => {
     const wrapper = mountHome({
       model_plaza_enabled: true,
       model_plaza_require_auth: false,
     })
 
-    expect(modelPlazaDestination(wrapper)).toBe('/model-plaza')
+    expect(modelPlazaDestination(wrapper)).toBeUndefined()
   })
 
   it('hides the model plaza link when the feature is disabled', () => {

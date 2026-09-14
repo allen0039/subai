@@ -299,7 +299,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		balanceLowNotifyThreshold = v
 	}
 
-	return &PublicSettings{
+	result := &PublicSettings{
 		RegistrationEnabled:                 settings[SettingKeyRegistrationEnabled] == "true",
 		EmailVerifyEnabled:                  emailVerifyEnabled,
 		ForceEmailOnThirdPartySignup:        settings[SettingKeyForceEmailOnThirdPartySignup] == "true",
@@ -377,7 +377,19 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		RiskControlEnabled: settings[SettingKeyRiskControlEnabled] == "true",
 
 		AllowUserViewErrorRequests: settings[SettingKeyAllowUserViewErrorRequests] == "true",
-	}, nil
+	}
+	result.LoginAgreementEnabled = false
+	result.ModelPlazaEnabled = false
+	result.LinuxDoOAuthEnabled = false
+	result.DingTalkOAuthEnabled = false
+	result.WeChatOAuthEnabled = false
+	result.WeChatOAuthOpenEnabled = false
+	result.WeChatOAuthMPEnabled = false
+	result.WeChatOAuthMobileEnabled = false
+	result.OIDCOAuthEnabled = false
+	result.GitHubOAuthEnabled = false
+	result.GoogleOAuthEnabled = false
+	return result, nil
 }
 
 // channelMonitorIntervalMin / channelMonitorIntervalMax bound the default interval

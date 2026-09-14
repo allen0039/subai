@@ -44,13 +44,10 @@ vi.mock('@/composables/useRoutePrefetch', () => ({
 }))
 
 describe('router WeChat OAuth route', () => {
-  it('registers the WeChat callback route as a public route', async () => {
+  it('omits removed social login, agreement and model plaza routes', async () => {
     const { default: router } = await import('@/router')
-    const route = router.getRoutes().find((record) => record.name === 'WeChatOAuthCallback')
-
-    expect(route?.path).toBe('/auth/wechat/callback')
-    expect(route?.meta.requiresAuth).toBe(false)
-    expect(route?.meta.title).toBe('WeChat OAuth Callback')
+    const removed = ['WeChatOAuthCallback', 'LinuxDoOAuthCallback', 'OIDCOAuthCallback', 'DingTalkOAuthCallback', 'OAuthCallback', 'LegalDocument', 'ModelPlaza']
+    for (const name of removed) expect(router.hasRoute(name)).toBe(false)
   })
 
   it('registers the WeChat payment callback route as a public route', async () => {

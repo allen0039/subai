@@ -58,3 +58,7 @@ python3 tools/subai_upstream_audit.py > docs/subai/IMPORT_AUDIT.json
 ```
 
 升级上游时重新固定 SHA、导入完整文件，再重放 GPT 授权及部署适配补丁。所有原始 LICENSE、版权和来源保留；分发按原许可履行要求。
+
+## SubAI 控制台精简（2026-09-15）
+
+按部署方要求移除首次引导、运营合规确认门槛、登录条款、模型广场以及 LinuxDo、微信、钉钉、OIDC、GitHub、Google 平台第三方登录入口和路由。保留邮箱密码登录及安全验证、原有 GPT 上游 OAuth、独立的微信支付授权。相关公开功能标记固定关闭，旧设置不会重新启用入口。上游许可和版权文件仍保留。

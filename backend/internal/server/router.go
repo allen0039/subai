@@ -124,9 +124,9 @@ func registerRoutes(
 	panelRateLimiter := middleware2.NewPanelRateLimiter(redisClient, settingService)
 
 	// Original SubAI upstream-GPT login endpoints, protected by the same
-	// admin auth, rate limits, audit and compliance middleware as the native UI.
+	// admin auth, rate limits and audit middleware as the native UI.
 	subaiOAuth := r.Group("/api/admin/accounts/oauth/sessions")
-	subaiOAuth.Use(gin.HandlerFunc(adminAuth), panelRateLimiter.Global(), gin.HandlerFunc(auditLog), middleware2.AdminComplianceGuard(settingService))
+	subaiOAuth.Use(gin.HandlerFunc(adminAuth), panelRateLimiter.Global(), gin.HandlerFunc(auditLog))
 	subaiOAuth.POST("", h.Admin.OpenAIOAuth.StartSubAIOAuth)
 	subaiOAuth.GET("/:sessionID", h.Admin.OpenAIOAuth.GetSubAIOAuth)
 	subaiOAuth.POST("/:sessionID/callback", h.Admin.OpenAIOAuth.CompleteSubAIOAuth)
@@ -135,7 +135,6 @@ func registerRoutes(
 	// 注册各模块路由
 	routes.RegisterAuthRoutes(v1, h, jwtAuth, auditLog, redisClient, settingService, panelRateLimiter)
 	routes.RegisterUserRoutes(v1, h, jwtAuth, auditLog, settingService, panelRateLimiter)
-	routes.RegisterModelPlazaRoutes(v1, h, optionalJWTAuth, settingService, panelRateLimiter)
 	routes.RegisterAdminRoutes(v1, h, adminAuth, auditLog, stepUpAuth, settingService, panelRateLimiter)
 	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg)
 	routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, auditLog, settingService, panelRateLimiter)

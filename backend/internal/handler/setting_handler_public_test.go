@@ -117,7 +117,7 @@ func TestSettingHandler_GetPublicSettings_ExposesTencentCaptchaConfiguration(t *
 	require.Equal(t, service.TencentCaptchaRegionINTL, resp.Data.TencentCaptchaRegion)
 }
 
-func TestSettingHandler_GetPublicSettings_ExposesWeChatOAuthModeCapabilities(t *testing.T) {
+func TestSettingHandler_GetPublicSettings_DisablesRemovedWeChatOAuthCapabilities(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := NewSettingHandler(service.NewSettingService(&settingHandlerPublicRepoStub{
 		values: map[string]string{
@@ -151,7 +151,7 @@ func TestSettingHandler_GetPublicSettings_ExposesWeChatOAuthModeCapabilities(t *
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
 	require.Equal(t, 0, resp.Code)
-	require.True(t, resp.Data.WeChatOAuthEnabled)
-	require.True(t, resp.Data.WeChatOAuthOpenEnabled)
-	require.True(t, resp.Data.WeChatOAuthMPEnabled)
+	require.False(t, resp.Data.WeChatOAuthEnabled)
+	require.False(t, resp.Data.WeChatOAuthOpenEnabled)
+	require.False(t, resp.Data.WeChatOAuthMPEnabled)
 }

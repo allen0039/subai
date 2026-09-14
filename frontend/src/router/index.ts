@@ -7,7 +7,6 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useAdminSettingsStore } from '@/stores/adminSettings'
-import { useAdminComplianceStore } from '@/stores/adminCompliance'
 import { useNavigationLoadingState } from '@/composables/useNavigationLoading'
 import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { getSetupStatus } from '@/api/setup'
@@ -69,37 +68,6 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/auth/callback',
-    name: 'OAuthCallback',
-    alias: '/auth/oauth/callback',
-    component: () => import('@/views/auth/OAuthCallbackView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'OAuth Callback',
-      titleKey: 'auth.oauthCallbackPageTitle'
-    }
-  },
-  {
-    path: '/auth/linuxdo/callback',
-    name: 'LinuxDoOAuthCallback',
-    component: () => import('@/views/auth/LinuxDoCallbackView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'LinuxDo OAuth Callback',
-      titleKey: 'auth.linuxdoCallbackPageTitle'
-    }
-  },
-  {
-    path: '/auth/wechat/callback',
-    name: 'WeChatOAuthCallback',
-    component: () => import('@/views/auth/WechatCallbackView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'WeChat OAuth Callback',
-      titleKey: 'auth.wechatCallbackPageTitle'
-    }
-  },
-  {
     path: '/auth/wechat/payment/callback',
     name: 'WeChatPaymentOAuthCallback',
     component: () => import('@/views/auth/WechatPaymentCallbackView.vue'),
@@ -110,32 +78,12 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/auth/dingtalk/callback',
-    name: 'DingTalkOAuthCallback',
-    component: () => import('@/views/auth/DingTalkCallbackView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'DingTalk OAuth Callback',
-      titleKey: 'auth.dingtalkCallbackPageTitle'
-    }
-  },
-  {
     path: '/auth/dingtalk/email-completion',
     name: 'dingtalk-email-completion',
     component: () => import('@/views/auth/DingTalkEmailCompletionView.vue'),
     meta: {
       requiresAuth: false,
       title: 'DingTalk Email Completion'
-    }
-  },
-  {
-    path: '/auth/oidc/callback',
-    name: 'OIDCOAuthCallback',
-    component: () => import('@/views/auth/OidcCallbackView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'OIDC OAuth Callback',
-      titleKey: 'auth.oidcCallbackPageTitle'
     }
   },
   {
@@ -164,25 +112,6 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: false,
       title: 'Key Usage',
-    }
-  },
-  {
-    path: '/legal/:documentId',
-    name: 'LegalDocument',
-    component: () => import('@/views/public/LegalDocumentView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'Legal Document'
-    }
-  },
-  {
-    path: '/model-plaza',
-    name: 'ModelPlaza',
-    component: () => import('@/views/ModelPlazaView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'Model Plaza',
-      titleKey: 'modelPlaza.title'
     }
   },
 
@@ -889,21 +818,6 @@ router.beforeEach(async (to, _from, next) => {
     next('/dashboard')
     return
   }
-
-  if (requiresAdmin && authStore.isAdmin) {
-    const adminComplianceStore = useAdminComplianceStore()
-    if (!adminComplianceStore.initialized) {
-      try {
-        await adminComplianceStore.fetchStatus()
-      } catch (error) {
-        const err = error as { status?: number; code?: string; metadata?: Record<string, string> }
-        if (err.status === 423 && err.code === 'ADMIN_COMPLIANCE_ACK_REQUIRED') {
-          adminComplianceStore.requireAcknowledgement(err.metadata)
-        }
-      }
-    }
-  }
-
 
   // 公共设置可能尚未加载（App.vue 的 onMounted 异步拉取晚于首次导航，且纯静态部署
   // 无 __APP_CONFIG__ 注入）。此时 cachedPublicSettings 为空会把 payment/risk_control

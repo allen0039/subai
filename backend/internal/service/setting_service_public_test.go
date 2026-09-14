@@ -180,7 +180,7 @@ func TestSettingService_GetPublicSettings_ExposesAllowUserViewErrorRequests(t *t
 	require.True(t, settings.AllowUserViewErrorRequests)
 }
 
-func TestSettingService_GetPublicSettings_ExposesWeChatOAuthModeCapabilities(t *testing.T) {
+func TestSettingService_GetPublicSettings_DisablesStoredWeChatOAuthCapabilities(t *testing.T) {
 	svc := NewSettingService(&settingPublicRepoStub{
 		values: map[string]string{
 			SettingKeyWeChatConnectEnabled:             "true",
@@ -197,9 +197,9 @@ func TestSettingService_GetPublicSettings_ExposesWeChatOAuthModeCapabilities(t *
 
 	settings, err := svc.GetPublicSettings(context.Background())
 	require.NoError(t, err)
-	require.True(t, settings.WeChatOAuthEnabled)
-	require.True(t, settings.WeChatOAuthOpenEnabled)
-	require.True(t, settings.WeChatOAuthMPEnabled)
+	require.False(t, settings.WeChatOAuthEnabled)
+	require.False(t, settings.WeChatOAuthOpenEnabled)
+	require.False(t, settings.WeChatOAuthMPEnabled)
 }
 
 func TestSettingService_GetPublicSettings_DoesNotExposeMobileOnlyWeChatAsWebOAuthAvailable(t *testing.T) {
@@ -219,10 +219,10 @@ func TestSettingService_GetPublicSettings_DoesNotExposeMobileOnlyWeChatAsWebOAut
 	require.False(t, settings.WeChatOAuthEnabled)
 	require.False(t, settings.WeChatOAuthOpenEnabled)
 	require.False(t, settings.WeChatOAuthMPEnabled)
-	require.True(t, settings.WeChatOAuthMobileEnabled)
+	require.False(t, settings.WeChatOAuthMobileEnabled)
 }
 
-func TestSettingService_GetPublicSettings_FallsBackToConfigForWeChatOAuthCapabilities(t *testing.T) {
+func TestSettingService_GetPublicSettings_DisablesConfiguredWeChatOAuthCapabilities(t *testing.T) {
 	svc := NewSettingService(&settingPublicRepoStub{values: map[string]string{}}, &config.Config{
 		WeChat: config.WeChatConnectConfig{
 			Enabled:             true,
@@ -235,8 +235,8 @@ func TestSettingService_GetPublicSettings_FallsBackToConfigForWeChatOAuthCapabil
 
 	settings, err := svc.GetPublicSettings(context.Background())
 	require.NoError(t, err)
-	require.True(t, settings.WeChatOAuthEnabled)
-	require.True(t, settings.WeChatOAuthOpenEnabled)
+	require.False(t, settings.WeChatOAuthEnabled)
+	require.False(t, settings.WeChatOAuthOpenEnabled)
 	require.False(t, settings.WeChatOAuthMPEnabled)
 	require.False(t, settings.WeChatOAuthMobileEnabled)
 }
@@ -308,4 +308,25 @@ func TestSettingService_GetPublicSettings_PaymentBalanceDisabledStrictTrue(t *te
 			require.Equal(t, tc.want, payload.PaymentBalanceDisabled)
 		})
 	}
+}
+
+func TestSubAI_PublicSettingsDisableRemovedFeatures(t *testing.T) {
+	repo := &settingPublicRepoStub{values: map[string]string{
+		SettingKeyLoginAgreementEnabled:  "true",
+		SettingKeyModelPlazaEnabled:      "true",
+		SettingKeyLinuxDoConnectEnabled:  "true",
+		SettingKeyDingTalkConnectEnabled: "true",
+		SettingKeyWeChatConnectEnabled:   "true",
+		SettingKeyOIDCConnectEnabled:     "true",
+	}}
+	settings, err := NewSettingService(repo, &config.Config{}).GetPublicSettings(context.Background())
+	require.NoError(t, err)
+	require.False(t, settings.LoginAgreementEnabled)
+	require.False(t, settings.ModelPlazaEnabled)
+	require.False(t, settings.LinuxDoOAuthEnabled)
+	require.False(t, settings.DingTalkOAuthEnabled)
+	require.False(t, settings.WeChatOAuthEnabled)
+	require.False(t, settings.OIDCOAuthEnabled)
+	require.False(t, settings.GitHubOAuthEnabled)
+	require.False(t, settings.GoogleOAuthEnabled)
 }
