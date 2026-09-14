@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -96,7 +97,9 @@ func (s *Server) syncServiceGroupModels(w http.ResponseWriter, r *http.Request, 
 		updated++
 	}
 	if updated == 0 {
-		s.writeErr(w, http.StatusBadGateway, modelSyncErrorMessage(lastErr))
+		message := modelSyncErrorMessage(lastErr)
+		log.Printf("service group model sync failed: group=%s accounts=%d reason=%s", groupID, len(ids), message)
+		s.writeErr(w, http.StatusBadGateway, message)
 		return
 	}
 	s.notifyMutation()
