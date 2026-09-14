@@ -65,6 +65,14 @@ export function money(value: unknown, empty = "不限"): string {
   // Preserve decimal precision from the ledger; do not round tiny charges to zero.
   return `${String(value)} 美元`;
 }
+
+// 套餐额度是运营配置，不需要展示账本使用的高精度小数；金额统一保留两位，
+// 账本、价格目录和实际费用仍使用 money() 保留原始精度。
+export function quotaMoney(value: unknown, empty = "不限"): string {
+  if (value === null || value === undefined || value === "") return empty;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? `${amount.toFixed(2)} 美元` : `${String(value)} 美元`;
+}
 const enumColumns = new Set(["state", "status", "role", "kind", "type", "strategy", "failure_mode", "owner_type", "period", "mode", "entry_type", "origin", "category", "action", "source", "decision", "coverage", "cache_state", "target_type"]);
 export function cellText(name: string, value: unknown): string {
   if (enumColumns.has(name)) return label(value, name);
@@ -79,6 +87,7 @@ export function errorText(error: unknown, status = 0): string {
   if (/[\u3400-\u9fff]/.test(text) && !/[a-zA-Z_]{2}/.test(text)) return text;
   if (/unresolved hold|hold reasons/.test(text)) return "该账号仍有未解除的隔离原因，请处理后再启用。";
   if (/version conflict/.test(text)) return "数据已更新或已删除，请刷新后重新编辑。";
+  if (/plan needs at least one active account in a bound account pool/.test(text)) return "套餐尚不能发布：请先在已绑定的账号池中添加至少一个已启用的上游账号。";
   if (/duplicate|already exists|unique constraint/.test(text)) return "名称或关联已存在，请检查后重试。";
   if (/timeout|timed out|deadline/i.test(text)) return "连接超时，请检查地址和网络后重试。";
   if (/authentication|proxy.*407|credentials/i.test(text)) return "认证失败，请检查用户名和密码。";
