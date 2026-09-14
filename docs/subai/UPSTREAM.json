@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/Wei-Shaw/sub2api",
+  "commit": "bdb42e22f81fcb633ff0a060961211dd2bcb515b",
+  "legacy_commit": "1b6d901f75da6046c096fa5909d8a2cab0357c79",
+  "policy": "Full upstream import; only GPT OAuth and required build/deployment integration are customized."
+}
