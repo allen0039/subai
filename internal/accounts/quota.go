@@ -269,21 +269,10 @@ func (q *QuotaClient) requestJSON(ctx context.Context, client *http.Client, meth
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
-	req.Header.Set("chatgpt-account-id", creds.AccountID)
-	req.Header.Set("openai-beta", "codex-1")
-	req.Header.Set("oai-language", "zh-CN")
-	req.Header.Set("originator", "Codex Desktop")
-	req.Header.Set("Accept", "application/json")
+	applyCodexRequestHeaders(req, creds)
 	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Origin", "https://chatgpt.com")
-	req.Header.Set("Referer", "https://chatgpt.com/")
-	req.Header.Set("sec-fetch-site", "none")
-	req.Header.Set("sec-fetch-mode", "no-cors")
-	req.Header.Set("sec-fetch-dest", "empty")
-	req.Header.Set("priority", "u=4, i")
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("连接官方账号服务失败: %w", err)
@@ -297,6 +286,30 @@ func (q *QuotaClient) requestJSON(ctx context.Context, client *http.Client, meth
 		return errors.New("官方账号服务返回了无法识别的数据")
 	}
 	return nil
+}
+
+// applyCodexRequestHeaders keeps every authenticated Codex backend request
+// consistent with the official client. Some backend endpoints, including the
+// model manifest, reject an otherwise valid OAuth token when its Codex client
+// context is omitted.
+func applyCodexRequestHeaders(req *http.Request, creds QuotaCredentials) {
+	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
+	req.Header.Set("chatgpt-account-id", creds.AccountID)
+	req.Header.Set("openai-beta", "codex-1")
+	req.Header.Set("oai-language", "zh-CN")
+	req.Header.Set("originator", "Codex Desktop")
+	// The Codex backend checks that originator and the User-Agent client family
+	// agree. Keep the stable desktop identity rather than Go's default client
+	// signature so manifest requests are accepted by the same upstream path as
+	// quota requests.
+	req.Header.Set("User-Agent", "Codex Desktop/1.0.0")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Origin", "https://chatgpt.com")
+	req.Header.Set("Referer", "https://chatgpt.com/")
+	req.Header.Set("sec-fetch-site", "none")
+	req.Header.Set("sec-fetch-mode", "no-cors")
+	req.Header.Set("sec-fetch-dest", "empty")
+	req.Header.Set("priority", "u=4, i")
 }
 
 func newRedeemRequestID() (string, error) {

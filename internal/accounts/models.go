@@ -38,11 +38,7 @@ func (c *ModelClient) FetchCodexModels(ctx context.Context, client *http.Client,
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
-	req.Header.Set("chatgpt-account-id", creds.AccountID)
-	req.Header.Set("Origin", "https://chatgpt.com")
-	req.Header.Set("Referer", "https://chatgpt.com/")
-	req.Header.Set("Accept", "application/json")
+	applyCodexRequestHeaders(req, creds)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -53,19 +49,28 @@ func (c *ModelClient) FetchCodexModels(ctx context.Context, client *http.Client,
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("官方 Codex 模型服务返回状态码 %d", resp.StatusCode)
+		return nil, fmt.Errorf("官方模型服务请求失败（状态码 %d）", resp.StatusCode)
 	}
-	var envelope struct {
-		Models []json.RawMessage `json:"models"`
-	}
+	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, errors.New("官方 Codex 模型列表格式异常")
+		return nil, errors.New("官方模型列表格式异常")
 	}
-	if len(envelope.Models) == 0 {
-		return nil, errors.New("官方 Codex 未返回模型列表")
+	// The Codex manifest uses "models". Accepting the OpenAI-compatible
+	// "data" representation as well keeps the account import resilient to a
+	// compatible upstream proxy, while model filtering below remains strict.
+	rawModels := envelope["models"]
+	if len(rawModels) == 0 {
+		rawModels = envelope["data"]
+	}
+	if len(rawModels) == 0 {
+		return nil, errors.New("官方模型服务未返回模型列表")
+	}
+	var models []json.RawMessage
+	if err := json.Unmarshal(rawModels, &models); err != nil {
+		return nil, errors.New("官方模型列表格式异常")
 	}
 	seen := map[string]bool{}
-	for _, raw := range envelope.Models {
+	for _, raw := range models {
 		var item struct {
 			Slug  string `json:"slug"`
 			ID    string `json:"id"`
@@ -91,7 +96,7 @@ func (c *ModelClient) FetchCodexModels(ctx context.Context, client *http.Client,
 	}
 	sort.Strings(out)
 	if len(out) == 0 {
-		return nil, errors.New("官方 Codex 未返回可用的 GPT 模型")
+		return nil, errors.New("官方模型服务未返回可用的 GPT 模型")
 	}
 	return out, nil
 }

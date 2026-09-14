@@ -83,23 +83,50 @@ func (s *Server) syncServiceGroupModels(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	updated, failed := 0, 0
+	var lastErr error
 	for _, id := range ids {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		err := s.syncOneAccountModels(ctx, id)
 		cancel()
 		if err != nil {
 			failed++
+			lastErr = err
 			continue
 		}
 		updated++
 	}
 	if updated == 0 {
-		s.writeErr(w, http.StatusBadGateway, "未能读取官方 Codex 模型，请检查账号授权与出口策略")
+		s.writeErr(w, http.StatusBadGateway, modelSyncErrorMessage(lastErr))
 		return
 	}
 	s.notifyMutation()
 	s.DB.LogAdminEvent(r.Context(), actorFrom(r), "service_group.model_sync", "service_group", groupID, storage.SanitizeForAdminEvent(map[string]any{"accounts": updated, "failed": failed}), "")
 	s.writeJSON(w, 200, map[string]any{"updated_accounts": updated, "failed_accounts": failed})
+}
+
+// modelSyncErrorMessage deliberately keeps the response actionable while
+// excluding credentials and upstream response bodies from the admin surface.
+func modelSyncErrorMessage(err error) string {
+	if err == nil {
+		return "未能读取官方模型，请检查账号授权和出口策略后重试"
+	}
+	message := strings.TrimSpace(err.Error())
+	switch {
+	case strings.Contains(message, "状态码 401"), strings.Contains(message, "状态码 403"), strings.Contains(message, "凭证"):
+		return "官方账号授权已失效，请重新授权后再同步模型"
+	case strings.Contains(message, "状态码 429"):
+		return "官方模型服务请求过于频繁，请稍后再同步"
+	case strings.Contains(message, "状态码 404"):
+		return "官方模型服务暂不可用，请稍后再同步"
+	case strings.Contains(strings.ToLower(message), "timeout"), strings.Contains(strings.ToLower(message), "deadline"):
+		return "连接官方模型服务超时，请检查账号出口策略"
+	case strings.Contains(strings.ToLower(message), "proxy"), strings.Contains(strings.ToLower(message), "connection"), strings.Contains(strings.ToLower(message), "network"):
+		return "无法连接官方模型服务，请检查账号出口策略"
+	case message != "":
+		return message
+	default:
+		return "未能读取官方模型，请检查账号授权和出口策略后重试"
+	}
 }
 
 func parseModelPoolIDs(raw string) []string {

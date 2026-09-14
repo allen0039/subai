@@ -91,7 +91,9 @@ export function cellText(name: string, value: unknown): string {
 
 export function errorText(error: unknown, status = 0): string {
   const text = error instanceof Error ? error.message : String(error ?? "");
-  if (/[\u3400-\u9fff]/.test(text) && !/[a-zA-Z_]{2}/.test(text)) return text;
+  // 服务端已经脱敏并给出中文的可操作原因时，优先完整显示它。模型名和
+  // 品牌名会带英文，不能再因此把具体错误降级成笼统的“操作失败”。
+  if (/[\u3400-\u9fff]/.test(text)) return text;
   if (/unresolved hold|hold reasons/.test(text)) return "该账号仍有未解除的隔离原因，请处理后再启用。";
   if (/version conflict/.test(text)) return "数据已更新或已删除，请刷新后重新编辑。";
   if (/plan needs at least one active account in a bound account pool/.test(text)) return "套餐尚不能发布：请先在已绑定的账号池中添加至少一个已启用的上游账号。";
