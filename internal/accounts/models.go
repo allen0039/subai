@@ -39,6 +39,14 @@ func (c *ModelClient) FetchCodexModels(ctx context.Context, client *http.Client,
 		return nil, err
 	}
 	applyCodexRequestHeaders(req, creds)
+	// The manifest requires version negotiation independently of OAuth.
+	const clientVersion = "0.146.0"
+	query := req.URL.Query()
+	query.Set("client_version", clientVersion)
+	req.URL.RawQuery = query.Encode()
+	req.Header.Set("Version", clientVersion)
+	req.Header.Set("Originator", "codex-tui")
+	req.Header.Set("User-Agent", "codex-tui/"+clientVersion+" (Ubuntu 22.4.0; x86_64) xterm-256color")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
