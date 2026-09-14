@@ -148,3 +148,5 @@ Console simplification complete: full frontend 2096/2096 passed, backend targete
 Implement explicit confirmation for authenticated users changing an already-bound email, with no email code/current-password prompt. Preserve password hash, alias collision checks, transaction and session invalidation. First-time binding retains its separate password setup flow. Test, publish and deploy without changing the actual administrator email.
 
 Email replacement implementation verified: 19 frontend/locale tests, typecheck, changed-file lint and production build passed. Backend confirmed-change, alias collision, password preservation, missing-confirmation handler and legacy first-binding tests passed. Publishing and deployment in progress; no actual user email has been changed.
+
+Email replacement complete: runtime b372526 published (run 34873046171) and deployed on Oracle3 port 18080, database retained. Isolated browser verification passed, including corrected old-email confirmation text. Initial stale-admin-credential check caused a transient rollback; final deployment used health checks and passed. Actual user credentials unchanged.

@@ -94,3 +94,5 @@ Console simplification phases complete: implementation, verification, image publ
 
 ## 2026-09-15 Confirm-only primary email replacement
 Implement explicit confirmation for authenticated users changing an already-bound email, with no email code/current-password prompt. Preserve password hash, alias collision checks, transaction and session invalidation. First-time binding retains its separate password setup flow. Test, publish and deploy without changing the actual administrator email.
+
+Email replacement complete: runtime b372526 published (run 34873046171) and deployed on Oracle3 port 18080, database retained. Isolated browser verification passed, including corrected old-email confirmation text. Initial stale-admin-credential check caused a transient rollback; final deployment used health checks and passed. Actual user credentials unchanged.
