@@ -88,3 +88,5 @@
 Scope: remove onboarding and administrator compliance gate; remove login agreement, model plaza and all platform social login settings/entry points. Keep password login and original GPT upstream OAuth. Plan: implement frontend/backend changes, run targeted tests/build and browser verification, publish image and update Oracle3 on port 18080 with existing new database retained.
 
 Console simplification phases: implementation complete; source checks complete; image publish and live browser validation in progress.
+
+Console simplification phases complete: implementation, verification, image publication, production deployment and browser validation.

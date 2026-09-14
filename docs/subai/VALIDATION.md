@@ -52,3 +52,7 @@
 浏览器截图与本地 API 检查结果保存在本 worktree 的 `.planning/qa/`。测试账号口令及会话仅存于临时文件，不进 Git 或镜像。
 
 本地测试实例及其专用数据库/Redis 卷已清理，临时管理员口令和浏览器会话文件已删除；构建好的本地镜像保留。最终镜像 ID：`sha256:f1bbb831e8996e0baaf7532aa6631d690984f1930db9ede20fdc5fa277d9b90b`。
+
+## Console simplification verification — 2026-09-15
+
+Frontend: all 276 files / 2096 tests passed; production build, typecheck and lint passed. Backend: affected service/server/routes/middleware/admin/dto packages passed; updated removed-WeChat public handler expectations passed on focused rerun. GPT OAuth targeted regressions passed; backend lint reported 0 issues. Published runtime commit `c4822dfab754f552c9eb7486802912c8811267c1` and deployed on Oracle3 port 18080 with database retained and backed up. Live API and Chrome checks confirmed login and settings work, removed feature flags are false, removed social login and plaza endpoints return 404, unauthenticated admin access still returns 401, and no compliance dialog/onboarding/JS errors remain.
