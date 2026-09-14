@@ -197,7 +197,7 @@
   <ConfirmDialog
     :show="showEmailConfirmation"
     :title="t('profile.authBindings.replaceConfirmTitle')"
-    :message="t('profile.authBindings.replaceConfirmMessage', { oldEmail: localUser?.email, email: confirmedEmail })"
+    :message="t('profile.authBindings.replaceConfirmMessage', { oldEmail: currentUser?.email, email: confirmedEmail })"
     @confirm="confirmEmailChange"
     @cancel="showEmailConfirmation = false"
   />

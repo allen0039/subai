@@ -63,6 +63,7 @@ vi.mock('vue-i18n', async (importOriginal) => {
         if (key === 'profile.authBindings.confirmEmailReplaceAction') return 'Replace primary email'
         if (key === 'profile.authBindings.codeSentTo') return `Code sent to ${params?.email || ''}`.trim()
         if (key === 'profile.authBindings.bindSuccess') return 'Bind success'
+        if (key === 'profile.authBindings.replaceConfirmMessage') return `Change from ${params?.oldEmail} to ${params?.email}`
         if (key === 'profile.authBindings.replaceSuccess') return 'Primary email updated'
         if (key === 'profile.authBindings.notes.emailManagedFromProfile')
           return 'Primary email is managed in the profile form'
@@ -486,6 +487,8 @@ describe('ProfileIdentityBindingsSection', () => {
     expect(userApiMocks.bindEmailIdentity).not.toHaveBeenCalled()
     const confirmation = wrapper.findComponent({ name: 'ConfirmDialog' })
     expect(confirmation.props('show')).toBe(true)
+    expect(confirmation.props('message')).toContain('current@example.com')
+    expect(confirmation.props('message')).toContain('new@example.com')
     confirmation.vm.$emit('cancel')
     await flushPromises()
     expect(userApiMocks.bindEmailIdentity).not.toHaveBeenCalled()
