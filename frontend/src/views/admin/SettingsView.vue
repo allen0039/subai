@@ -7318,6 +7318,9 @@ const settingsTabs = computed(() => {
   if (!authStore.isSimpleMode) return allSettingsTabs;
   return [
     allSettingsTabs[0],
+    allSettingsTabs[1],
+    allSettingsTabs[3],
+    allSettingsTabs[7],
     allSettingsTabs[4],
     { ...allSettingsTabs[2], label: "admin.settings.tabs.advanced" },
   ];

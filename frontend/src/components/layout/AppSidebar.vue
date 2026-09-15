@@ -101,8 +101,8 @@
           </template>
         </div>
 
-        <!-- Personal Section for Admin (hidden in simple mode) -->
-        <div v-if="!authStore.isSimpleMode" class="sidebar-section">
+        <!-- Personal Section for Admin -->
+        <div class="sidebar-section">
           <div class="sidebar-section-title" :class="{ 'sidebar-section-title-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'">
             <span class="sidebar-section-title-text" :class="{ 'sidebar-section-title-text-collapsed': sidebarCollapsed }">
               {{ t('nav.myAccount') }}
@@ -694,13 +694,13 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
   }
   items.push(
     { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
-    { path: '/batch-image', label: t('nav.batchImage'), icon: BatchImageIcon, hideInSimpleMode: true, featureFlag: flagBatchImageAccess },
-    { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
-    { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },
+    { path: '/batch-image', label: t('nav.batchImage'), icon: BatchImageIcon, featureFlag: flagBatchImageAccess },
+    { path: '/usage', label: t('nav.usage'), icon: ChartIcon },
+    { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, featureFlag: flagAvailableChannels },
     { path: '/monitor', label: t('nav.channelStatus'), icon: SignalIcon, featureFlag: flagChannelMonitor },
-    { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, featureFlag: flagSubscription },
-    { path: '/purchase', label: purchaseNavLabel.value, icon: RechargeSubscriptionIcon, hideInSimpleMode: true, featureFlag: flagPayment },
-    { path: '/orders', label: t('nav.myOrders'), icon: OrderListIcon, hideInSimpleMode: true, featureFlag: flagPayment },
+    { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, featureFlag: flagSubscription },
+    { path: '/purchase', label: purchaseNavLabel.value, icon: RechargeSubscriptionIcon, featureFlag: flagPayment },
+    { path: '/orders', label: t('nav.myOrders'), icon: OrderListIcon, featureFlag: flagPayment },
     { path: '/affiliate', label: t('nav.affiliate'), icon: UsersIcon, hideInSimpleMode: true, featureFlag: flagAffiliate },
     { path: '/profile', label: t('nav.profile'), icon: UserIcon },
     ...customMenuItemsForUser.value.map((item): NavItem => ({
@@ -743,21 +743,6 @@ const customMenuItemsForAdmin = computed(() => {
 
 // Admin navigation items
 const adminNavItems = computed((): NavItem[] => {
-  // Private/simple deployments use a fixed, task-oriented navigation. Keep
-  // commercial and monitoring modules reachable only in standard mode so the
-  // daily admin surface stays focused on operating the upstream gateway.
-  if (authStore.isSimpleMode) {
-    return [
-      { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon },
-      { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
-      { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon },
-      { path: '/admin/proxies', label: t('nav.proxies'), icon: ServerIcon },
-      { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
-      { path: '/admin/usage', label: t('nav.usage'), icon: ChartIcon },
-      { path: '/admin/settings', label: t('nav.settings'), icon: CogIcon },
-    ]
-  }
-
   const baseItems: NavItem[] = [
     { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon },
     { path: '/admin/ops', label: t('nav.ops'), icon: ChartIcon, featureFlag: flagOpsMonitoring },
@@ -820,7 +805,11 @@ const adminNavItems = computed((): NavItem[] => {
     { path: '/admin/audit-logs', label: t('nav.auditLogs'), icon: ShieldIcon, hideInSimpleMode: true }
   ]
 
-  const visible = applyFeatureFlags(baseItems)
+  // Keep the requested management tools in private mode without enabling billing.
+  const hiddenInPrivateMode = new Set(['/admin/ops', '/admin/plugins', '/admin/announcements', '/admin/affiliates'])
+  const visible = applyFeatureFlags(authStore.isSimpleMode
+    ? baseItems.filter(item => !hiddenInPrivateMode.has(item.path))
+    : baseItems)
 
   visible.push({ path: '/admin/settings', label: t('nav.settings'), icon: CogIcon })
   for (const cm of customMenuItemsForAdmin.value) {

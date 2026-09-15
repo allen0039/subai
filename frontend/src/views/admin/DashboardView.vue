@@ -75,7 +75,7 @@
           </div>
 
           <!-- New Users Today -->
-          <div v-if="!isSimpleMode" class="card p-4">
+          <div class="card p-4">
             <div class="flex items-center gap-3">
               <div class="rounded-lg bg-emerald-100 p-2 dark:bg-emerald-900/30">
                 <Icon name="userPlus" size="md" class="text-emerald-600 dark:text-emerald-400" :stroke-width="2" />
@@ -96,7 +96,7 @@
         </div>
 
         <!-- Row 2: Token Stats -->
-        <div v-if="!isSimpleMode" class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <!-- Today Tokens -->
           <div class="card p-4">
             <div class="flex items-center gap-3">

@@ -120,6 +120,7 @@ vi.mock("@/api", () => ({
 }));
 
 vi.mock("@/stores", () => ({
+  useAuthStore: () => ({ isSimpleMode: false }),
   useAppStore: () => ({
     showError,
     showSuccess,
