@@ -32,7 +32,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/home',
     name: 'Home',
-    component: () => import('@/views/HomeView.vue'),
+    redirect: '/login',
     meta: {
       requiresAuth: false,
       title: 'Home'
@@ -171,15 +171,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/redeem',
-    name: 'Redeem',
-    component: () => import('@/views/user/RedeemView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: false,
-      title: 'Redeem Code',
-      titleKey: 'redeem.title',
-      descriptionKey: 'redeem.description'
-    }
+    redirect: '/dashboard'
   },
   {
     path: '/affiliate',
@@ -409,15 +401,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/admin/channels/monitor',
-    name: 'AdminChannelMonitor',
-    component: () => import('@/views/admin/ChannelMonitorView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: true,
-      title: 'Channel Monitor',
-      titleKey: 'admin.channelMonitor.title',
-      descriptionKey: 'admin.channelMonitor.description'
-    }
+    redirect: '/admin/channels/pricing'
   },
   {
     path: '/monitor',
@@ -492,27 +476,11 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/admin/redeem',
-    name: 'AdminRedeem',
-    component: () => import('@/views/admin/RedeemView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: true,
-      title: 'Redeem Code Management',
-      titleKey: 'admin.redeem.title',
-      descriptionKey: 'admin.redeem.description'
-    }
+    redirect: '/admin/dashboard'
   },
   {
     path: '/admin/promo-codes',
-    name: 'AdminPromoCodes',
-    component: () => import('@/views/admin/PromoCodesView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: true,
-      title: 'Promo Code Management',
-      titleKey: 'admin.promo.title',
-      descriptionKey: 'admin.promo.description'
-    }
+    redirect: '/admin/dashboard'
   },
   {
     path: '/admin/settings',
@@ -864,7 +832,6 @@ router.beforeEach(async (to, _from, next) => {
   if (authStore.isSimpleMode) {
     const restrictedPaths = [
       '/admin/subscriptions',
-      '/admin/redeem',
       '/subscriptions',
       '/redeem'
     ]

@@ -76,38 +76,6 @@
             </span>
           </template>
 
-          <template #cell-notify_mode="{ row }">
-            <span
-              :class="[
-                'badge',
-                row.notify_mode === 'popup'
-                  ? 'badge-warning'
-                  : 'badge-gray'
-              ]"
-            >
-              {{ row.notify_mode === 'popup' ? t('admin.announcements.notifyModeLabels.popup') : t('admin.announcements.notifyModeLabels.silent') }}
-            </span>
-          </template>
-
-          <template #cell-targeting="{ row }">
-            <span class="text-sm text-gray-600 dark:text-gray-300">
-              {{ targetingSummary(row.targeting) }}
-            </span>
-          </template>
-
-          <template #cell-timeRange="{ row }">
-            <div class="text-sm text-gray-600 dark:text-gray-300">
-              <div>
-                <span class="font-medium">{{ t('admin.announcements.form.startsAt') }}:</span>
-                <span class="ml-1">{{ row.starts_at ? formatDateTime(row.starts_at) : t('admin.announcements.timeImmediate') }}</span>
-              </div>
-              <div class="mt-0.5">
-                <span class="font-medium">{{ t('admin.announcements.form.endsAt') }}:</span>
-                <span class="ml-1">{{ row.ends_at ? formatDateTime(row.ends_at) : t('admin.announcements.timeNever') }}</span>
-              </div>
-            </div>
-          </template>
-
           <template #cell-created_at="{ value }">
             <span class="text-sm text-gray-500 dark:text-dark-400">{{ formatDateTime(value) }}</span>
           </template>
@@ -186,35 +154,10 @@
           <textarea v-model="form.content" rows="6" class="input" required></textarea>
         </div>
 
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div>
-            <label class="input-label">{{ t('admin.announcements.form.status') }}</label>
-            <Select v-model="form.status" :options="statusOptions" />
-          </div>
-          <div>
-            <label class="input-label">{{ t('admin.announcements.form.notifyMode') }}</label>
-            <Select v-model="form.notify_mode" :options="notifyModeOptions" />
-            <p class="input-hint">{{ t('admin.announcements.form.notifyModeHint') }}</p>
-          </div>
+        <div>
+          <label class="input-label">{{ t('admin.announcements.form.status') }}</label>
+          <Select v-model="form.status" :options="statusOptions" />
         </div>
-
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div>
-            <label class="input-label">{{ t('admin.announcements.form.startsAt') }}</label>
-            <input v-model="form.starts_at_str" type="datetime-local" max="9999-12-31T23:59" class="input" />
-            <p class="input-hint">{{ t('admin.announcements.form.startsAtHint') }}</p>
-          </div>
-          <div>
-            <label class="input-label">{{ t('admin.announcements.form.endsAt') }}</label>
-            <input v-model="form.ends_at_str" type="datetime-local" max="9999-12-31T23:59" class="input" />
-            <p class="input-hint">{{ t('admin.announcements.form.endsAtHint') }}</p>
-          </div>
-        </div>
-
-        <AnnouncementTargetingEditor
-          v-model="form.targeting"
-          :groups="subscriptionGroups"
-        />
       </form>
 
       <template #footer>
@@ -262,8 +205,8 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { adminAPI } from '@/api/admin'
-import { formatDateTime, formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
-import type { AdminGroup, Announcement, AnnouncementTargeting } from '@/types'
+import { formatDateTime, formatDateTimeLocalInput } from '@/utils/format'
+import type { Announcement, AnnouncementTargeting } from '@/types'
 import type { Column } from '@/components/common/types'
 
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -276,7 +219,6 @@ import Select from '@/components/common/Select.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import Icon from '@/components/icons/Icon.vue'
 
-import AnnouncementTargetingEditor from '@/components/admin/announcements/AnnouncementTargetingEditor.vue'
 import AnnouncementReadStatusDialog from '@/components/admin/announcements/AnnouncementReadStatusDialog.vue'
 import AnnouncementPopup from '@/components/common/AnnouncementPopup.vue'
 
@@ -316,17 +258,9 @@ const statusOptions = computed(() => [
   { value: 'archived', label: t('admin.announcements.statusLabels.archived') }
 ])
 
-const notifyModeOptions = computed(() => [
-  { value: 'silent', label: t('admin.announcements.notifyModeLabels.silent') },
-  { value: 'popup', label: t('admin.announcements.notifyModeLabels.popup') }
-])
-
 const columns = computed<Column[]>(() => [
   { key: 'title', label: t('admin.announcements.columns.title'), sortable: true },
   { key: 'status', label: t('admin.announcements.columns.status'), sortable: true },
-  { key: 'notify_mode', label: t('admin.announcements.columns.notifyMode'), sortable: true },
-  { key: 'targeting', label: t('admin.announcements.columns.targeting') },
-  { key: 'timeRange', label: t('admin.announcements.columns.timeRange') },
   { key: 'created_at', label: t('admin.announcements.columns.createdAt'), sortable: true },
   { key: 'actions', label: t('admin.announcements.columns.actions') }
 ])
@@ -336,12 +270,6 @@ const statusLabel = (status: string) => {
   if (status === 'active') return t('admin.announcements.statusLabels.active')
   if (status === 'archived') return t('admin.announcements.statusLabels.archived')
   return status
-}
-
-const targetingSummary = (targeting: AnnouncementTargeting) => {
-  const anyOf = targeting?.any_of ?? []
-  if (!anyOf || anyOf.length === 0) return t('admin.announcements.targetingSummaryAll')
-  return t('admin.announcements.targetingSummaryCustom', { groups: anyOf.length })
 }
 
 // ===== CRUD / list =====
@@ -437,18 +365,6 @@ const form = reactive({
   targeting: { any_of: [] } as AnnouncementTargeting
 })
 
-const subscriptionGroups = ref<AdminGroup[]>([])
-
-async function loadSubscriptionGroups() {
-  try {
-    const all = await adminAPI.groups.getAll()
-    subscriptionGroups.value = (all || []).filter((g) => g.subscription_type === 'subscription')
-  } catch (error: any) {
-    console.error('Error loading groups:', error)
-    // not fatal
-  }
-}
-
 function resetForm() {
   form.title = ''
   form.content = ''
@@ -490,17 +406,12 @@ function closeEdit() {
 }
 
 function buildCreatePayload() {
-  const startsAt = parseDateTimeLocalInput(form.starts_at_str)
-  const endsAt = parseDateTimeLocalInput(form.ends_at_str)
-
   return {
     title: form.title,
     content: form.content,
     status: form.status as any,
     notify_mode: form.notify_mode as any,
-    targeting: form.targeting,
-    starts_at: startsAt ?? undefined,
-    ends_at: endsAt ?? undefined
+    targeting: { any_of: [] }
   }
 }
 
@@ -510,45 +421,10 @@ function buildUpdatePayload(original: Announcement) {
   if (form.title !== original.title) payload.title = form.title
   if (form.content !== original.content) payload.content = form.content
   if (form.status !== original.status) payload.status = form.status
-  if (form.notify_mode !== (original.notify_mode || 'silent')) payload.notify_mode = form.notify_mode
-
-  // starts_at / ends_at: distinguish unchanged vs clear(0) vs set
-  const originalStarts = original.starts_at ? Math.floor(new Date(original.starts_at).getTime() / 1000) : null
-  const originalEnds = original.ends_at ? Math.floor(new Date(original.ends_at).getTime() / 1000) : null
-
-  const newStarts = parseDateTimeLocalInput(form.starts_at_str)
-  const newEnds = parseDateTimeLocalInput(form.ends_at_str)
-
-  if (newStarts !== originalStarts) {
-    payload.starts_at = newStarts === null ? 0 : newStarts
-  }
-  if (newEnds !== originalEnds) {
-    payload.ends_at = newEnds === null ? 0 : newEnds
-  }
-
-  // targeting: do shallow compare by JSON
-  if (JSON.stringify(form.targeting ?? {}) !== JSON.stringify(original.targeting ?? {})) {
-    payload.targeting = form.targeting
-  }
-
   return payload
 }
 
 async function handleSave() {
-  // Frontend validation for targeting (to avoid ANNOUNCEMENT_INVALID_TARGET)
-  const anyOf = form.targeting?.any_of ?? []
-  if (anyOf.length > 50) {
-    appStore.showError(t('admin.announcements.failedToCreate'))
-    return
-  }
-  for (const g of anyOf) {
-    const allOf = g?.all_of ?? []
-    if (allOf.length > 50) {
-      appStore.showError(t('admin.announcements.failedToCreate'))
-      return
-    }
-  }
-
   saving.value = true
   try {
     if (!editingAnnouncement.value) {
@@ -613,10 +489,7 @@ function openReadStatus(row: Announcement) {
   showReadStatusDialog.value = true
 }
 
-onMounted(async () => {
-  await loadSubscriptionGroups()
-  await loadAnnouncements()
-})
+onMounted(loadAnnouncements)
 
 onUnmounted(() => {
   if (searchDebounceTimer) window.clearTimeout(searchDebounceTimer)
