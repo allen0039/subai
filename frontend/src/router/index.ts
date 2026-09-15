@@ -326,7 +326,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/admin/dashboard',
     name: 'AdminDashboard',
-    component: () => import('@/views/admin/DashboardView.vue'),
+    component: () => import('@/views/admin/WorkbenchDashboardView.vue'),
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
