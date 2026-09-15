@@ -1,30 +1,6 @@
 <template>
-  <div class="min-h-screen bg-[#f6f7f8] dark:bg-dark-950">
-
-    <!-- Sidebar -->
-    <AppSidebar />
-
-    <!-- Main Content Area -->
-    <div
-      class="relative min-h-screen transition-all duration-300"
-      :class="[sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-64']"
-    >
-      <!-- Header -->
-      <AppHeader />
-
-      <!-- Main Content -->
-      <main class="p-4 md:p-6 lg:p-8">
-        <slot />
-      </main>
-    </div>
-  </div>
+  <WorkbenchLayout><slot /></WorkbenchLayout>
 </template>
-
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useAppStore } from '@/stores'
-import AppSidebar from './AppSidebar.vue'
-import AppHeader from './AppHeader.vue'
-const appStore = useAppStore()
-const sidebarCollapsed = computed(() => appStore.sidebarCollapsed)
+import WorkbenchLayout from './WorkbenchLayout.vue'
 </script>

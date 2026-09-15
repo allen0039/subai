@@ -1,4 +1,5 @@
 <template>
+  <slot :items="isAdmin ? [...adminNavItems, ...personalNavItems] : (appStore.backendModeEnabled ? [] : userNavItems)" :site-name="siteName" :site-logo="siteLogo" :toggle-theme="toggleTheme" :is-dark="isDark">
   <aside
     class="sidebar"
     :class="[
@@ -185,6 +186,7 @@
       @click="closeMobile"
     ></div>
   </transition>
+  </slot>
 </template>
 
 <script setup lang="ts">
