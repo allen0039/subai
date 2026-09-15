@@ -17,9 +17,6 @@ import type {
   TempUnschedulableStatus,
   AdminDataPayload,
   AdminDataImportResult,
-  CodexSessionImportRequest,
-  CodexSessionImportResult,
-  OpenAICodexPATCreateRequest,
   CheckMixedChannelRequest,
   CheckMixedChannelResponse,
   UpstreamBillingProbeResult,
@@ -477,6 +474,68 @@ export async function exchangeCode(
   return data
 }
 
+export interface SubAIOAuthSessionStartRequest {
+  proxy_id?: number
+  reuse_account_id?: string
+}
+
+export interface SubAIOAuthSession {
+  id: string
+  status?: 'pending' | 'saving' | 'completed' | 'failed' | 'expired'
+  state?: string
+  authorize_url?: string
+  account_id?: number
+}
+
+export interface SubAIOAuthCompletion {
+  ok: boolean
+  account_id: number
+  quota_synced: boolean
+  status_saved?: boolean
+}
+
+function subAIOAuthURL(path: string): string {
+  const browserOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin
+  const configuredBase = String(apiClient.defaults?.baseURL || browserOrigin)
+  const apiOrigin = new URL(configuredBase, browserOrigin).origin
+  return new URL(path, apiOrigin).toString()
+}
+
+/**
+ * Start the original SubAI single-use GPT OAuth session.
+ *
+ * This deliberately targets the compatibility route outside /api/v1. Tokens
+ * are exchanged and persisted by the backend; they are never returned to the
+ * browser.
+ */
+export async function startSubAIOAuthSession(
+  request: SubAIOAuthSessionStartRequest
+): Promise<SubAIOAuthSession> {
+  const { data } = await apiClient.post<SubAIOAuthSession>(
+    subAIOAuthURL('/api/admin/accounts/oauth/sessions'),
+    request
+  )
+  return data
+}
+
+export async function getSubAIOAuthSession(sessionId: string): Promise<SubAIOAuthSession> {
+  const { data } = await apiClient.get<SubAIOAuthSession>(
+    subAIOAuthURL(`/api/admin/accounts/oauth/sessions/${encodeURIComponent(sessionId)}`)
+  )
+  return data
+}
+
+export async function completeSubAIOAuthSession(
+  sessionId: string,
+  callbackUrl: string
+): Promise<SubAIOAuthCompletion> {
+  const { data } = await apiClient.post<SubAIOAuthCompletion>(
+    subAIOAuthURL(`/api/admin/accounts/oauth/sessions/${encodeURIComponent(sessionId)}/callback`),
+    { callback_url: callbackUrl }
+  )
+  return data
+}
+
 /**
  * Batch create accounts
  * @param accounts - Array of account data
@@ -754,18 +813,6 @@ export async function importData(payload: {
     data: payload.data,
     skip_default_group_bind: payload.skip_default_group_bind
   })
-  return data
-}
-
-export async function importCodexSession(payload: CodexSessionImportRequest): Promise<CodexSessionImportResult> {
-  const { data } = await apiClient.post<CodexSessionImportResult>('/admin/accounts/import/codex-session', payload, {
-    timeout: 120000 // 120s timeout for large session imports
-  })
-  return data
-}
-
-export async function createOpenAICodexPAT(payload: OpenAICodexPATCreateRequest): Promise<Account> {
-  const { data } = await apiClient.post<Account>('/admin/openai/create-from-codex-pat', payload)
   return data
 }
 
@@ -1100,6 +1147,9 @@ export const accountsAPI = {
   syncUpstreamModelsPreview,
   generateAuthUrl,
   exchangeCode,
+  startSubAIOAuthSession,
+  getSubAIOAuthSession,
+  completeSubAIOAuthSession,
   refreshOpenAIToken,
   batchCreate,
   batchUpdateCredentials,
@@ -1108,8 +1158,6 @@ export const accountsAPI = {
   syncFromCrs,
   exportData,
   importData,
-  importCodexSession,
-  createOpenAICodexPAT,
   getAntigravityDefaultModelMapping,
   batchDelete,
   batchClearError,

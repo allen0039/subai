@@ -327,7 +327,7 @@ const handleGenerateUrl = async () => {
   if (!props.account) return
 
   if (isOpenAILike.value) {
-    await openaiOAuth.generateAuthUrl(props.account.proxy_id)
+    await openaiOAuth.generateAuthUrl(props.account.proxy_id, props.account.id)
   } else if (isGemini.value) {
     const creds = (props.account.credentials || {}) as Record<string, unknown>
     const tierId = typeof creds.tier_id === 'string' ? creds.tier_id : undefined
@@ -358,28 +358,16 @@ const handleExchangeCode = async () => {
       return
     }
 
-    const tokenInfo = await oauthClient.exchangeAuthCode(
+    const completion = await oauthClient.exchangeAuthCode(
       authCode.trim(),
       sessionId,
       stateToUse,
       props.account.proxy_id
     )
-    if (!tokenInfo) return
-
-    // Build credentials and extra info
-    const credentials = oauthClient.buildCredentials(tokenInfo)
-    const extra = oauthClient.buildExtraInfo(tokenInfo)
+    if (!completion) return
 
     try {
-      // Update account with new credentials
-      await adminAPI.accounts.update(props.account.id, {
-        type: 'oauth', // OpenAI OAuth is always 'oauth' type
-        credentials,
-        extra
-      })
-
-      // Clear error status after successful re-authorization
-      await adminAPI.accounts.clearError(props.account.id)
+      await adminAPI.accounts.getById(completion.account_id)
 
       appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
       emit('reauthorized')

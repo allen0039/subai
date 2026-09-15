@@ -3547,13 +3547,13 @@
         :show-proxy-warning="form.platform !== 'openai' && form.platform !== 'grok' && !!form.proxy_id"
         :allow-multiple="form.platform === 'anthropic'"
         :show-cookie-option="form.platform === 'anthropic'"
-        :show-refresh-token-option="form.platform === 'openai' || form.platform === 'antigravity' || form.platform === 'grok'"
-        :show-mobile-refresh-token-option="form.platform === 'openai'"
+        :show-refresh-token-option="form.platform === 'antigravity' || form.platform === 'grok'"
+        :show-mobile-refresh-token-option="false"
         :show-session-token-option="false"
         :show-access-token-option="false"
-        :show-codex-session-import-option="form.platform === 'openai'"
-        :show-agent-identity-option="form.platform === 'openai'"
-        :show-codex-pat-option="form.platform === 'openai'"
+        :show-codex-session-import-option="false"
+        :show-agent-identity-option="false"
+        :show-codex-pat-option="false"
         :show-sso-option="form.platform === 'grok'"
         :show-email-password-option="false"
         :show-manual-option="true"
@@ -3563,10 +3563,7 @@
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
         @validate-refresh-token="handleValidateRefreshToken"
-        @validate-mobile-refresh-token="handleOpenAIValidateMobileRT"
         @validate-session-token="handleValidateSessionToken"
-        @import-codex-session="handleOpenAIImportCodexSession"
-        @import-codex-pat="handleOpenAIImportCodexPAT"
         @import-sso="handleGrokImportSSO"
         @authorize-password="handleGrokAuthorizePassword"
       />
@@ -3917,7 +3914,6 @@ import type {
   AccountType,
   CheckMixedChannelResponse,
   CreateAccountRequest,
-  CodexSessionImportMessage,
   OpenAICompactMode,
   OpenAIResponsesMode,
   OpenAIEndpointCapability
@@ -5490,17 +5486,6 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   return Object.keys(extra).length > 0 ? extra : undefined
 }
 
-const buildOpenAICodexImportExtra = (): Record<string, unknown> | undefined => {
-  const extra = buildOpenAIExtra()
-  if (!extra) {
-    return undefined
-  }
-  if (!openAILongContextBillingTouched.value) {
-    delete extra.openai_long_context_billing_enabled
-  }
-  return Object.keys(extra).length > 0 ? extra : undefined
-}
-
 const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unknown> | undefined => {
   if (form.platform !== 'anthropic' || accountCategory.value !== 'apikey') {
     return base
@@ -5906,9 +5891,7 @@ const handleGenerateUrl = async () => {
 }
 
 const handleValidateRefreshToken = (rt: string) => {
-  if (form.platform === 'openai') {
-    handleOpenAIValidateRT(rt)
-  } else if (form.platform === 'antigravity') {
+  if (form.platform === 'antigravity') {
     handleAntigravityValidateRT(rt)
   } else if (form.platform === 'grok') {
     handleGrokValidateRT(rt)
@@ -6296,17 +6279,18 @@ const handleOpenAIExchange = async (authCode: string) => {
       return
     }
 
-    const tokenInfo = await oauthClient.exchangeAuthCode(
+    const completion = await oauthClient.exchangeAuthCode(
       authCode.trim(),
       oauthClient.sessionId.value,
       stateToUse,
       form.proxy_id
     )
-    if (!tokenInfo) return
+    if (!completion) return
 
-    const credentials = oauthClient.buildCredentials(tokenInfo)
-    const oauthExtra = oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
-    const extra = buildOpenAIExtra(oauthExtra)
+    // The original SubAI callback persists the OAuth credentials server-side.
+    // Only non-secret account settings are applied from the current form.
+    const credentials: Record<string, unknown> = {}
+    const extra = buildOpenAIExtra()
     const shouldCreateOpenAI = form.platform === 'openai'
 
     // Add model mapping for OpenAI OAuth accounts（透传模式下不应用）
@@ -6329,14 +6313,12 @@ const handleOpenAIExchange = async (authCode: string) => {
     }
 
     if (shouldCreateOpenAI) {
-      await adminAPI.accounts.create({
+      await adminAPI.accounts.update(completion.account_id, {
         name: form.name,
         notes: form.notes,
-        platform: 'openai',
         type: 'oauth',
         credentials,
         extra: withUpstreamRequestIdHeader(extra),
-        proxy_id: form.proxy_id,
         concurrency: form.concurrency,
         load_factor: form.load_factor ?? undefined,
         priority: form.priority,
@@ -6345,7 +6327,11 @@ const handleOpenAIExchange = async (authCode: string) => {
         expires_at: form.expires_at,
         auto_pause_on_expired: autoPauseOnExpired.value
       })
-      appStore.showSuccess(t('admin.accounts.accountCreated'))
+      appStore.showSuccess(
+        completion.quota_synced
+          ? t('admin.accounts.accountCreated')
+          : `${t('admin.accounts.accountCreated')}，官方额度暂未同步`
+      )
     }
 
     emit('created')
@@ -6357,314 +6343,6 @@ const handleOpenAIExchange = async (authCode: string) => {
     oauthClient.loading.value = false
   }
 }
-
-// OpenAI 手动 RT 批量验证和创建
-// OpenAI Mobile RT client_id
-const OPENAI_MOBILE_RT_CLIENT_ID = 'app_LlGpXReQgckcGGUo2JrYvtJK'
-
-const buildOpenAICodexImportCredentialExtras = (): Record<string, unknown> | null => {
-  const credentials: Record<string, unknown> = {}
-  if (!isOpenAIModelRestrictionDisabled.value) {
-    const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
-    if (modelMapping) {
-      credentials.model_mapping = modelMapping
-    }
-  }
-
-  const compactModelMapping = buildOpenAICompactModelMapping()
-  if (compactModelMapping) {
-    credentials.compact_model_mapping = compactModelMapping
-  }
-
-  if (!applyTempUnschedConfig(credentials)) {
-    return null
-  }
-  return credentials
-}
-
-const formatCodexImportMessages = (messages?: CodexSessionImportMessage[]) => {
-  return (messages || [])
-    .map((item) => {
-      const name = item.name ? ` ${item.name}` : ''
-      return `#${item.index}${name}: ${item.message}`
-    })
-    .join('\n')
-}
-
-const isAgentIdentityImportContent = (content: string) => {
-  const isAgentIdentityValue = (value: unknown): boolean => {
-    if (Array.isArray(value)) return value.length > 0 && value.every(isAgentIdentityValue)
-    if (!value || typeof value !== 'object') return false
-    const record = value as Record<string, unknown>
-    const authMode = record.auth_mode ?? record.authMode
-    const agentIdentity = record.agent_identity ?? record.agentIdentity
-    return (typeof authMode === 'string' && authMode.toLowerCase() === 'agentidentity')
-      || (!!agentIdentity && typeof agentIdentity === 'object')
-  }
-
-  try {
-    return isAgentIdentityValue(JSON.parse(content))
-  } catch {
-    const lines = content.split('\n').map((line) => line.trim()).filter(Boolean)
-    if (lines.length === 0) return false
-    try {
-      return lines.every((line) => isAgentIdentityValue(JSON.parse(line)))
-    } catch {
-      return false
-    }
-  }
-}
-
-const handleOpenAIImportCodexSession = async (content: string) => {
-  const oauthClient = openaiOAuth
-  const trimmed = content.trim()
-  if (!trimmed) {
-    oauthClient.error.value = t('admin.accounts.oauth.openai.codexSessionEmpty')
-    return
-  }
-  if (oauthFlowRef.value?.inputMethod === 'agent_identity' && !isAgentIdentityImportContent(trimmed)) {
-    oauthClient.error.value = t('admin.accounts.oauth.openai.agentIdentityInvalid')
-    return
-  }
-
-  const credentialExtras = buildOpenAICodexImportCredentialExtras()
-  if (credentialExtras === null) {
-    return
-  }
-
-  oauthClient.loading.value = true
-  oauthClient.error.value = ''
-
-  try {
-    const extra = buildOpenAICodexImportExtra()
-    const result = await adminAPI.accounts.importCodexSession({
-      content: trimmed,
-      name: form.name,
-      notes: form.notes || null,
-      proxy_id: form.proxy_id,
-      concurrency: form.concurrency,
-      load_factor: form.load_factor ?? undefined,
-      priority: form.priority,
-      rate_multiplier: form.rate_multiplier,
-      group_ids: form.group_ids,
-      expires_at: form.expires_at,
-      auto_pause_on_expired: autoPauseOnExpired.value,
-      credential_extras: Object.keys(credentialExtras).length > 0 ? credentialExtras : undefined,
-      extra: withUpstreamRequestIdHeader(extra),
-      update_existing: true
-    })
-
-    const successCount = result.created + result.updated
-    const params = {
-      created: result.created,
-      updated: result.updated,
-      skipped: result.skipped,
-      failed: result.failed
-    }
-
-    if (successCount > 0 && result.failed === 0) {
-      appStore.showSuccess(t('admin.accounts.oauth.openai.codexSessionImportSuccess', params))
-      emit('created')
-      handleClose()
-      return
-    }
-
-    const errorText = formatCodexImportMessages(result.errors)
-    const warningText = formatCodexImportMessages(result.warnings)
-    oauthClient.error.value = [errorText, warningText].filter(Boolean).join('\n')
-
-    if (result.failed === 0) {
-      appStore.showWarning(t('admin.accounts.oauth.openai.codexSessionImportSuccess', params))
-      return
-    }
-
-    if (successCount > 0) {
-      appStore.showWarning(t('admin.accounts.oauth.openai.codexSessionImportPartial', params))
-      emit('created')
-      return
-    }
-
-    appStore.showError(t('admin.accounts.oauth.openai.codexSessionImportFailed'))
-  } catch (error: any) {
-    oauthClient.error.value =
-      error.response?.data?.detail ||
-      error.response?.data?.message ||
-      error.message ||
-      t('admin.accounts.oauth.openai.codexSessionImportFailed')
-    appStore.showError(oauthClient.error.value)
-  } finally {
-    oauthClient.loading.value = false
-  }
-}
-
-const handleOpenAIImportCodexPAT = async (accessToken: string) => {
-  const oauthClient = openaiOAuth
-  const trimmed = accessToken.trim()
-  if (!trimmed) {
-    oauthClient.error.value = t('admin.accounts.oauth.openai.codexPatEmpty')
-    return
-  }
-
-  const credentialExtras = buildOpenAICodexImportCredentialExtras()
-  if (credentialExtras === null) {
-    return
-  }
-
-  oauthClient.loading.value = true
-  oauthClient.error.value = ''
-
-  try {
-    const extra = buildOpenAICodexImportExtra()
-    await adminAPI.accounts.createOpenAICodexPAT({
-      access_token: trimmed,
-      name: form.name,
-      notes: form.notes || null,
-      proxy_id: form.proxy_id,
-      concurrency: form.concurrency,
-      load_factor: form.load_factor ?? undefined,
-      priority: form.priority,
-      rate_multiplier: form.rate_multiplier,
-      group_ids: form.group_ids,
-      expires_at: form.expires_at,
-      auto_pause_on_expired: autoPauseOnExpired.value,
-      credential_extras: Object.keys(credentialExtras).length > 0 ? credentialExtras : undefined,
-      extra: withUpstreamRequestIdHeader(extra)
-    })
-
-    appStore.showSuccess(t('admin.accounts.accountCreated'))
-    emit('created')
-    handleClose()
-  } catch (error: any) {
-    oauthClient.error.value =
-      error.response?.data?.detail ||
-      error.response?.data?.message ||
-      error.message ||
-      t('admin.accounts.oauth.openai.codexPatImportFailed')
-    appStore.showError(oauthClient.error.value)
-  } finally {
-    oauthClient.loading.value = false
-  }
-}
-
-// OpenAI RT 批量验证和创建（共享逻辑）
-const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string) => {
-  const oauthClient = openaiOAuth
-  if (!refreshTokenInput.trim()) return
-
-  const refreshTokens = refreshTokenInput
-    .split('\n')
-    .map((rt) => rt.trim())
-    .filter((rt) => rt)
-
-  if (refreshTokens.length === 0) {
-    oauthClient.error.value = t('admin.accounts.oauth.openai.pleaseEnterRefreshToken')
-    return
-  }
-
-  oauthClient.loading.value = true
-  oauthClient.error.value = ''
-
-  let successCount = 0
-  let failedCount = 0
-  const errors: string[] = []
-  const shouldCreateOpenAI = form.platform === 'openai'
-
-  try {
-    for (let i = 0; i < refreshTokens.length; i++) {
-      try {
-        const tokenInfo = await oauthClient.validateRefreshToken(
-          refreshTokens[i],
-          form.proxy_id,
-          clientId
-        )
-        if (!tokenInfo) {
-          failedCount++
-          errors.push(`#${i + 1}: ${oauthClient.error.value || 'Validation failed'}`)
-          oauthClient.error.value = ''
-          continue
-        }
-
-        const credentials = oauthClient.buildCredentials(tokenInfo)
-        if (clientId) {
-          credentials.client_id = clientId
-        }
-        const oauthExtra = oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
-        const extra = buildOpenAIExtra(oauthExtra)
-
-        // Add model mapping for OpenAI OAuth accounts（透传模式下不应用）
-        if (shouldCreateOpenAI && !isOpenAIModelRestrictionDisabled.value) {
-          const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
-          if (modelMapping) {
-            credentials.model_mapping = modelMapping
-          }
-        }
-        if (shouldCreateOpenAI) {
-          const compactModelMapping = buildOpenAICompactModelMapping()
-          if (compactModelMapping) {
-            credentials.compact_model_mapping = compactModelMapping
-          }
-        }
-
-        // Generate account name; fallback to email if name is empty (ent schema requires NotEmpty)
-        const baseName = form.name || tokenInfo.email || 'OpenAI OAuth Account'
-        const accountName = refreshTokens.length > 1 ? `${baseName} #${i + 1}` : baseName
-
-        if (shouldCreateOpenAI) {
-          await adminAPI.accounts.create({
-            name: accountName,
-            notes: form.notes,
-            platform: 'openai',
-            type: 'oauth',
-            credentials,
-            extra: withUpstreamRequestIdHeader(extra),
-            proxy_id: form.proxy_id,
-            concurrency: form.concurrency,
-            load_factor: form.load_factor ?? undefined,
-            priority: form.priority,
-            rate_multiplier: form.rate_multiplier,
-            group_ids: form.group_ids,
-            expires_at: form.expires_at,
-            auto_pause_on_expired: autoPauseOnExpired.value
-          })
-        }
-
-        successCount++
-      } catch (error: any) {
-        failedCount++
-        const errMsg = error.response?.data?.detail || error.message || 'Unknown error'
-        errors.push(`#${i + 1}: ${errMsg}`)
-      }
-    }
-
-    // Show results
-    if (successCount > 0 && failedCount === 0) {
-      appStore.showSuccess(
-        refreshTokens.length > 1
-          ? t('admin.accounts.oauth.batchSuccess', { count: successCount })
-          : t('admin.accounts.accountCreated')
-      )
-      emit('created')
-      handleClose()
-    } else if (successCount > 0 && failedCount > 0) {
-      appStore.showWarning(
-        t('admin.accounts.oauth.batchPartialSuccess', { success: successCount, failed: failedCount })
-      )
-      oauthClient.error.value = errors.join('\n')
-      emit('created')
-    } else {
-      oauthClient.error.value = errors.join('\n')
-      appStore.showError(t('admin.accounts.oauth.batchFailed'))
-    }
-  } finally {
-    oauthClient.loading.value = false
-  }
-}
-
-// 手动输入 RT（Codex CLI client_id，默认）
-const handleOpenAIValidateRT = (rt: string) => handleOpenAIBatchRT(rt)
-
-// 手动输入 Mobile RT
-const handleOpenAIValidateMobileRT = (rt: string) => handleOpenAIBatchRT(rt, OPENAI_MOBILE_RT_CLIENT_ID)
 
 // Antigravity 手动 RT 批量验证和创建
 const handleAntigravityValidateRT = async (refreshTokenInput: string) => {

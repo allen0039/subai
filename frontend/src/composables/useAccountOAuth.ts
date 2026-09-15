@@ -7,12 +7,8 @@ export type AuthInputMethod =
   | 'manual'
   | 'cookie'
   | 'refresh_token'
-  | 'mobile_refresh_token'
   | 'session_token'
   | 'access_token'
-  | 'codex_session'
-  | 'agent_identity'
-  | 'codex_pat'
   | 'sso_cookie'
   | 'email_password'
 

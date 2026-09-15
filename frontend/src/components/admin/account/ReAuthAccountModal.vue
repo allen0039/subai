@@ -130,7 +130,7 @@
         :show-help="isAnthropic"
         :show-proxy-warning="isAnthropic"
         :show-cookie-option="isAnthropic"
-        :show-refresh-token-option="isOpenAI || isAntigravity || isGrok"
+        :show-refresh-token-option="isAntigravity || isGrok"
         :show-sso-option="isGrok"
         :show-email-password-option="false"
         :allow-multiple="false"
@@ -370,7 +370,7 @@ const handleGenerateUrl = async () => {
   if (!props.account) return
 
   if (isOpenAILike.value) {
-    await openaiOAuth.generateAuthUrl(props.account.proxy_id)
+    await openaiOAuth.generateAuthUrl(props.account.proxy_id, props.account.id)
   } else if (isGemini.value) {
     const creds = (props.account.credentials || {}) as Record<string, unknown>
     const tierId = typeof creds.tier_id === 'string' ? creds.tier_id : undefined
@@ -403,24 +403,16 @@ const handleExchangeCode = async () => {
       return
     }
 
-    const tokenInfo = await oauthClient.exchangeAuthCode(
+    const completion = await oauthClient.exchangeAuthCode(
       authCode.trim(),
       sessionId,
       stateToUse,
       props.account.proxy_id
     )
-    if (!tokenInfo) return
-
-    // Build credentials and extra info
-    const credentials = oauthClient.buildCredentials(tokenInfo)
-    const extra = oauthClient.buildExtraInfo(tokenInfo)
+    if (!completion) return
 
     try {
-      const updatedAccount = await adminAPI.accounts.applyOAuthCredentials(props.account.id, {
-        type: 'oauth',
-        credentials,
-        extra
-      })
+      const updatedAccount = await adminAPI.accounts.getById(completion.account_id)
 
       appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
       emit('reauthorized', updatedAccount)
@@ -639,34 +631,6 @@ const handleValidateRefreshToken = async (refreshTokenInput: string) => {
     .map((line) => line.trim())
     .filter(Boolean)[0]
   if (!refreshToken) return
-
-  if (isOpenAILike.value) {
-    openaiOAuth.loading.value = true
-    openaiOAuth.error.value = ''
-    try {
-      const tokenInfo = await openaiOAuth.validateRefreshToken(refreshToken, props.account.proxy_id)
-      if (!tokenInfo) return
-
-      const updatedAccount = await adminAPI.accounts.applyOAuthCredentials(props.account.id, {
-        type: 'oauth',
-        credentials: openaiOAuth.buildCredentials(tokenInfo),
-        extra: openaiOAuth.buildExtraInfo(tokenInfo)
-      })
-      appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
-      emit('reauthorized', updatedAccount)
-      handleClose()
-    } catch (error: any) {
-      openaiOAuth.error.value =
-        error.response?.data?.detail ||
-        error.response?.data?.message ||
-        error.message ||
-        t('admin.accounts.oauth.authFailed')
-      appStore.showError(openaiOAuth.error.value)
-    } finally {
-      openaiOAuth.loading.value = false
-    }
-    return
-  }
 
   if (!isAntigravity.value) return
   antigravityOAuth.loading.value = true

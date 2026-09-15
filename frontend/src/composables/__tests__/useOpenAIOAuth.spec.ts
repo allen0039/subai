@@ -22,9 +22,8 @@ vi.mock('vue-i18n', () => ({
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
-      generateAuthUrl: vi.fn(),
-      exchangeCode: vi.fn(),
-      refreshOpenAIToken: vi.fn()
+      startSubAIOAuthSession: vi.fn(),
+      completeSubAIOAuthSession: vi.fn()
     }
   }
 }))
@@ -32,52 +31,9 @@ vi.mock('@/api/admin', () => ({
 import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
 import { adminAPI } from '@/api/admin'
 
-describe('useOpenAIOAuth.buildCredentials', () => {
-  it('should keep client_id when token response contains it', () => {
-    const oauth = useOpenAIOAuth()
-    const creds = oauth.buildCredentials({
-      access_token: 'at',
-      refresh_token: 'rt',
-      client_id: 'app_test_client',
-      expires_at: 1700000000
-    })
-
-    expect(creds.client_id).toBe('app_test_client')
-    expect(creds.access_token).toBe('at')
-    expect(creds.refresh_token).toBe('rt')
-  })
-
-  it('should keep legacy behavior when client_id is missing', () => {
-    const oauth = useOpenAIOAuth()
-    const creds = oauth.buildCredentials({
-      access_token: 'at',
-      refresh_token: 'rt',
-      expires_at: 1700000000
-    })
-
-    expect(Object.prototype.hasOwnProperty.call(creds, 'client_id')).toBe(false)
-    expect(creds.access_token).toBe('at')
-    expect(creds.refresh_token).toBe('rt')
-  })
-
-  it('should keep ChatGPT subscription expiration from token response', () => {
-    const oauth = useOpenAIOAuth()
-    const creds = oauth.buildCredentials({
-      access_token: 'at',
-      refresh_token: 'rt',
-      expires_at: 1700000000,
-      plan_type: 'team',
-      subscription_expires_at: '2026-07-20T19:22:48+00:00'
-    })
-
-    expect(creds.plan_type).toBe('team')
-    expect(creds.subscription_expires_at).toBe('2026-07-20T19:22:48+00:00')
-  })
-})
-
 describe('useOpenAIOAuth.exchangeAuthCode', () => {
   it('shows a clear proxy hint when code exchange fails without a proxy', async () => {
-    vi.mocked(adminAPI.accounts.exchangeCode).mockRejectedValueOnce({
+    vi.mocked(adminAPI.accounts.completeSubAIOAuthSession).mockRejectedValueOnce({
       status: 502,
       reason: 'OPENAI_OAUTH_PROXY_REQUIRED',
       message: 'OpenAI OAuth token exchange failed: no proxy is configured.'
@@ -95,19 +51,52 @@ describe('useOpenAIOAuth.exchangeAuthCode', () => {
 
 describe('SubAI callback URL contract', () => {
   it('sends the actual full callback without substituting cached state', async () => {
-    vi.mocked(adminAPI.accounts.exchangeCode).mockReset().mockResolvedValueOnce({ access_token: 'at' })
+    vi.mocked(adminAPI.accounts.completeSubAIOAuthSession).mockReset().mockResolvedValueOnce({
+      ok: true,
+      account_id: 42,
+      quota_synced: true
+    })
     const oauth = useOpenAIOAuth()
     const callback = 'http://localhost:1455/auth/callback?code=c&state=actual-state'
     await oauth.exchangeAuthCode(callback, 'sid', 'cached-state')
-    expect(adminAPI.accounts.exchangeCode).toHaveBeenCalledWith('/admin/openai/exchange-code', {
-      session_id: 'sid', callback_url: callback
-    })
+    expect(adminAPI.accounts.completeSubAIOAuthSession).toHaveBeenCalledWith('sid', callback)
   })
 
   it('rejects a code without the complete callback URL', async () => {
-    vi.mocked(adminAPI.accounts.exchangeCode).mockReset()
+    vi.mocked(adminAPI.accounts.completeSubAIOAuthSession).mockReset()
     const oauth = useOpenAIOAuth()
     expect(await oauth.exchangeAuthCode('bare-code', 'sid', 'cached-state')).toBeNull()
-    expect(adminAPI.accounts.exchangeCode).not.toHaveBeenCalled()
+    expect(adminAPI.accounts.completeSubAIOAuthSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('SubAI authorization session start', () => {
+  it('uses the original session endpoint contract for a new account', async () => {
+    vi.mocked(adminAPI.accounts.startSubAIOAuthSession).mockResolvedValueOnce({
+      id: 'sid-new',
+      state: 'state-new',
+      authorize_url: 'https://auth.openai.com/oauth/authorize?state=state-new'
+    })
+    const oauth = useOpenAIOAuth()
+
+    expect(await oauth.generateAuthUrl(9)).toBe(true)
+    expect(adminAPI.accounts.startSubAIOAuthSession).toHaveBeenCalledWith({ proxy_id: 9 })
+    expect(oauth.sessionId.value).toBe('sid-new')
+    expect(oauth.oauthState.value).toBe('state-new')
+  })
+
+  it('binds reauthorization to the existing account', async () => {
+    vi.mocked(adminAPI.accounts.startSubAIOAuthSession).mockResolvedValueOnce({
+      id: 'sid-reuse',
+      state: 'state-reuse',
+      authorize_url: 'https://auth.openai.com/oauth/authorize?state=state-reuse'
+    })
+    const oauth = useOpenAIOAuth()
+
+    expect(await oauth.generateAuthUrl(9, 42)).toBe(true)
+    expect(adminAPI.accounts.startSubAIOAuthSession).toHaveBeenCalledWith({
+      proxy_id: 9,
+      reuse_account_id: '42'
+    })
   })
 })
