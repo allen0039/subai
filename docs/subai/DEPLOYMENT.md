@@ -31,3 +31,7 @@ Deployed and verified commit `c4822dfab754f552c9eb7486802912c8811267c1` on the e
 ## Confirm-only email replacement release
 
 Deployed runtime commit `b37252640f2053d2793a315614d23cd32f80b709`; image publication run `34873046171` succeeded. Backup: `/opt/subai-backups/email-20260914T165650Z`. Existing database, credentials and port 18080 retained. Public health/login and disabled-feature checks passed. Initial configured admin credentials returned 401 during the first deployment attempt, causing a rollback; deployment then succeeded using health checks without resetting credentials. Authenticated email-change behavior was verified with an isolated test account, not the production account.
+
+## Operations workbench release
+
+Deployed runtime commit `519e36d90dc0ee6677bcaa1178110a3480f31ba2`; image publication run `34963194935` succeeded. Oracle3 now uses `allen0039/subai-server:sha-519e36d90dc0ee6677bcaa1178110a3480f31ba2` (manifest `sha256:1c41c277d37e6beaf6d456ed96b912649a8d9a03775797f384d8bf69b42944ab`). Deployment backup: `/opt/subai-backups/workbench-20260915T113221Z`; the prior application image is additionally tagged locally as `subai-rollback:workbench-20260915T113221Z`. The existing database, secrets, port `18080`, and proxy configuration were retained. Container health, local `/health`, public `/health`, and the public login page returned HTTP 200. Authenticated workbench verification remains pending an administrator session.
