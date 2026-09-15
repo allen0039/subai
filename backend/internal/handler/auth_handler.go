@@ -97,6 +97,7 @@ type AuthResponse struct {
 	ExpiresIn    int       `json:"expires_in,omitempty"`    // 新增：Access Token有效期（秒）
 	TokenType    string    `json:"token_type"`
 	User         *dto.User `json:"user"`
+	RunMode      string    `json:"run_mode,omitempty"`
 }
 
 func ensureLoginUserActive(user *service.User) error {
@@ -112,13 +113,17 @@ func ensureLoginUserActive(user *service.User) error {
 // respondWithTokenPair 生成 Token 对并返回认证响应
 // 如果 Token 对生成失败，回退到只返回 Access Token（向后兼容）
 func (h *AuthHandler) respondWithTokenPair(c *gin.Context, user *service.User) {
-	respondWithTokenPair(c, h.authService, user)
+	respondWithTokenPair(c, h.authService, user, h.cfg)
 }
 
-func respondWithTokenPair(c *gin.Context, authService *service.AuthService, user *service.User) {
+func respondWithTokenPair(c *gin.Context, authService *service.AuthService, user *service.User, cfg ...*config.Config) {
 	if err := ensureLoginUserActive(user); err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+	runMode := config.RunModeStandard
+	if len(cfg) > 0 && cfg[0] != nil {
+		runMode = cfg[0].RunMode
 	}
 
 	tokenPair, err := authService.GenerateTokenPair(c.Request.Context(), user, "")
@@ -134,6 +139,7 @@ func respondWithTokenPair(c *gin.Context, authService *service.AuthService, user
 			AccessToken: token,
 			TokenType:   "Bearer",
 			User:        dto.UserFromService(user),
+			RunMode:     runMode,
 		})
 		return
 	}
@@ -143,6 +149,7 @@ func respondWithTokenPair(c *gin.Context, authService *service.AuthService, user
 		ExpiresIn:    tokenPair.ExpiresIn,
 		TokenType:    "Bearer",
 		User:         dto.UserFromService(user),
+		RunMode:      runMode,
 	})
 }
 

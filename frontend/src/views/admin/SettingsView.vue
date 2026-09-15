@@ -37,7 +37,7 @@
                   <Icon :name="tab.icon" size="sm" />
                 </span>
                 <span class="settings-tab-label">{{
-                  t(`admin.settings.tabs.${tab.key}`)
+                  t(tab.label)
                 }}</span>
               </button>
             </div>
@@ -4998,8 +4998,8 @@
                 </div>
               </div>
 
-              <!-- Custom Endpoints -->
-              <div>
+              <!-- Public-facing customization is not needed by a private gateway. -->
+              <div v-if="!authStore.isSimpleMode">
                 <label
                   class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
                 >
@@ -5130,7 +5130,7 @@
               </div>
 
               <!-- Contact Info -->
-              <div>
+              <div v-if="!authStore.isSimpleMode">
                 <label
                   class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
                 >
@@ -5148,7 +5148,7 @@
               </div>
 
               <!-- Doc URL -->
-              <div>
+              <div v-if="!authStore.isSimpleMode">
                 <label
                   class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
                 >
@@ -5183,7 +5183,7 @@
               </div>
 
               <!-- Home Content -->
-              <div>
+              <div v-if="!authStore.isSimpleMode">
                 <label
                   class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
                 >
@@ -5205,7 +5205,7 @@
               </div>
 
               <!-- Compact Home Page -->
-              <div class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700">
+              <div v-if="!authStore.isSimpleMode" class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700">
                 <div>
                   <label class="font-medium text-gray-900 dark:text-white">{{
                     t("admin.settings.site.compactHome")
@@ -5235,7 +5235,7 @@
           </div>
 
           <!-- Custom Menu Items -->
-          <div class="card">
+          <div v-if="!authStore.isSimpleMode" class="card">
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
@@ -7252,7 +7252,7 @@ import {
 import TotpStepUpDialog from "@/components/auth/TotpStepUpDialog.vue";
 import { affiliatesAPI, type AffiliateAdminEntry, type SimpleUser as AffiliateSimpleUser } from "@/api/admin/affiliates";
 import { extractApiErrorMessage, extractI18nErrorMessage } from "@/utils/apiError";
-import { useAppStore } from "@/stores";
+import { useAppStore, useAuthStore } from "@/stores";
 import { useAdminSettingsStore } from "@/stores/adminSettings";
 import { normalizeVisibleMethod } from "@/components/payment/paymentFlow";
 import {
@@ -7270,6 +7270,7 @@ import {
 
 const { t, locale } = useI18n();
 const appStore = useAppStore();
+const authStore = useAuthStore();
 // 关闭 step-up 开关是敏感操作：后端返回 STEP_UP_REQUIRED 时弹 TOTP 码重试
 const settingsStepUp = useStepUp();
 const adminSettingsStore = useAdminSettingsStore();
@@ -7302,16 +7303,25 @@ type SettingsTab =
   | "email"
   | "backup";
 const activeTab = ref<SettingsTab>("general");
-const settingsTabs = [
-  { key: "general" as SettingsTab, icon: "home" as const },
-  { key: "features" as SettingsTab, icon: "bolt" as const },
-  { key: "security" as SettingsTab, icon: "shield" as const },
-  { key: "users" as SettingsTab, icon: "user" as const },
-  { key: "gateway" as SettingsTab, icon: "server" as const },
-  { key: "payment" as SettingsTab, icon: "creditCard" as const },
-  { key: "email" as SettingsTab, icon: "mail" as const },
-  { key: "backup" as SettingsTab, icon: "database" as const },
+const allSettingsTabs = [
+  { key: "general" as SettingsTab, icon: "home" as const, label: "admin.settings.tabs.general" },
+  { key: "features" as SettingsTab, icon: "bolt" as const, label: "admin.settings.tabs.features" },
+  { key: "security" as SettingsTab, icon: "shield" as const, label: "admin.settings.tabs.security" },
+  { key: "users" as SettingsTab, icon: "user" as const, label: "admin.settings.tabs.users" },
+  { key: "gateway" as SettingsTab, icon: "server" as const, label: "admin.settings.tabs.gateway" },
+  { key: "payment" as SettingsTab, icon: "creditCard" as const, label: "admin.settings.tabs.payment" },
+  { key: "email" as SettingsTab, icon: "mail" as const, label: "admin.settings.tabs.email" },
+  { key: "backup" as SettingsTab, icon: "database" as const, label: "admin.settings.tabs.backup" },
 ];
+
+const settingsTabs = computed(() => {
+  if (!authStore.isSimpleMode) return allSettingsTabs;
+  return [
+    allSettingsTabs[0],
+    allSettingsTabs[4],
+    { ...allSettingsTabs[2], label: "admin.settings.tabs.advanced" },
+  ];
+});
 
 const settingsTabKeyboardActions = {
   ArrowLeft: -1,
@@ -7342,19 +7352,19 @@ function handleSettingsTabKeydown(event: KeyboardEvent, tab: SettingsTab): void 
   }
 
   event.preventDefault();
-  const currentIndex = settingsTabs.findIndex((item) => item.key === tab);
+  const currentIndex = settingsTabs.value.findIndex((item) => item.key === tab);
   let nextIndex = currentIndex < 0 ? 0 : currentIndex;
 
   if (action === "first") {
     nextIndex = 0;
   } else if (action === "last") {
-    nextIndex = settingsTabs.length - 1;
+    nextIndex = settingsTabs.value.length - 1;
   } else {
     nextIndex =
-      (nextIndex + action + settingsTabs.length) % settingsTabs.length;
+      (nextIndex + action + settingsTabs.value.length) % settingsTabs.value.length;
   }
 
-  const nextTab = settingsTabs[nextIndex]?.key;
+  const nextTab = settingsTabs.value[nextIndex]?.key;
   if (!nextTab) {
     return;
   }

@@ -75,7 +75,7 @@
           </div>
 
           <!-- New Users Today -->
-          <div class="card p-4">
+          <div v-if="!isSimpleMode" class="card p-4">
             <div class="flex items-center gap-3">
               <div class="rounded-lg bg-emerald-100 p-2 dark:bg-emerald-900/30">
                 <Icon name="userPlus" size="md" class="text-emerald-600 dark:text-emerald-400" :stroke-width="2" />
@@ -96,7 +96,7 @@
         </div>
 
         <!-- Row 2: Token Stats -->
-        <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div v-if="!isSimpleMode" class="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <!-- Today Tokens -->
           <div class="card p-4">
             <div class="flex items-center gap-3">
@@ -217,7 +217,7 @@
         </div>
 
         <!-- Quick Actions -->
-        <div class="card p-4">
+        <div v-if="!isSimpleMode" class="card p-4">
           <div class="mb-3 flex items-center justify-between">
             <h2 class="text-sm font-semibold text-gray-900 dark:text-white">
               {{ t('admin.dashboard.quickActions') }}
@@ -265,7 +265,7 @@
         </div>
 
         <!-- Charts Section -->
-        <div class="space-y-6">
+        <div v-if="!isSimpleMode" class="space-y-6">
           <!-- Date Range Filter -->
           <div class="card p-4">
             <div class="flex flex-wrap items-center gap-4">
@@ -345,6 +345,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 
 const { t } = useI18n()
 import { adminAPI } from '@/api/admin'
@@ -388,6 +389,8 @@ ChartJS.register(
 )
 
 const appStore = useAppStore()
+const authStore = useAuthStore()
+const isSimpleMode = computed(() => authStore.isSimpleMode)
 const router = useRouter()
 const { canUseBatchImage, refreshBatchImageAccess } = useBatchImageAccess()
 const stats = ref<DashboardStats | null>(null)
@@ -656,8 +659,8 @@ const loadDashboardSnapshot = async (includeStats: boolean) => {
       end_date: endDate.value,
       granularity: granularity.value,
       include_stats: includeStats,
-      include_trend: true,
-      include_model_stats: true,
+      include_trend: !isSimpleMode.value,
+      include_model_stats: !isSimpleMode.value,
       include_group_stats: false,
       include_users_trend: false
     })
@@ -733,6 +736,10 @@ const loadUserSpendingRanking = async () => {
 }
 
 const loadDashboardStats = async () => {
+  if (isSimpleMode.value) {
+    await loadDashboardSnapshot(true)
+    return
+  }
   await Promise.all([
     loadDashboardSnapshot(true),
     loadUsersTrend(),
@@ -741,6 +748,10 @@ const loadDashboardStats = async () => {
 }
 
 const loadChartData = async () => {
+  if (isSimpleMode.value) {
+    await loadDashboardSnapshot(false)
+    return
+  }
   await Promise.all([
     loadDashboardSnapshot(false),
     loadUsersTrend(),
@@ -749,7 +760,9 @@ const loadChartData = async () => {
 }
 
 onMounted(() => {
-  void refreshBatchImageAccess()
+  if (!isSimpleMode.value) {
+    void refreshBatchImageAccess()
+  }
   loadDashboardStats()
 })
 </script>

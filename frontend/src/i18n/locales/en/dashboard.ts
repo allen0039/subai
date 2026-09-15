@@ -12,6 +12,7 @@ export default {
     performance: 'Performance',
     avgResponse: 'Avg Response',
     averageTime: 'Average time',
+    additionalMetrics: 'More metrics',
     timeRange: 'Time Range',
     granularity: 'Granularity',
     day: 'Day',

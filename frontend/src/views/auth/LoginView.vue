@@ -12,10 +12,10 @@
       </div>
       <!-- Login Form -->
       <form @submit.prevent="handleLogin" class="space-y-5">
-        <!-- Email Input -->
+        <!-- Account Input -->
         <div>
           <label for="email" class="input-label">
-            {{ t('auth.emailLabel') }}
+            {{ localLogin.enabled ? t('auth.accountLabel') : t('auth.emailLabel') }}
           </label>
           <div class="relative">
             <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
@@ -24,14 +24,14 @@
             <input
               id="email"
               v-model="formData.email"
-              type="email"
+              :type="localLogin.enabled ? 'text' : 'email'"
               required
               autofocus
-              autocomplete="email"
+              :autocomplete="localLogin.enabled ? 'username' : 'email'"
               :disabled="authActionDisabled"
               class="input pl-11"
               :class="{ 'input-error': errors.email }"
-              :placeholder="t('auth.emailPlaceholder')"
+              :placeholder="localLogin.enabled ? t('auth.accountPlaceholder') : t('auth.emailPlaceholder')"
             />
           </div>
         </div>
@@ -325,9 +325,25 @@ const totpTempToken = ref<string>('')
 const totpUserEmailMasked = ref<string>('')
 const totpModalRef = ref<InstanceType<typeof TotpLoginModal> | null>(null)
 
+function getLocalLoginConfig() {
+  const account = import.meta.env.VITE_LOCAL_LOGIN_ACCOUNT?.trim() || ''
+  const email = import.meta.env.VITE_LOCAL_LOGIN_EMAIL?.trim() || ''
+  const password = import.meta.env.VITE_LOCAL_LOGIN_PASSWORD || ''
+  const enabled = import.meta.env.DEV && Boolean(account && email && password)
+
+  return {
+    enabled,
+    account: enabled ? account : '',
+    email: enabled ? email : '',
+    password: enabled ? password : ''
+  }
+}
+
+const localLogin = getLocalLoginConfig()
+
 const formData = reactive({
-  email: '',
-  password: ''
+  email: localLogin.account,
+  password: localLogin.password
 })
 
 const errors = reactive({
@@ -531,11 +547,11 @@ function validateForm(): boolean {
     return false
   }
 
-  // Email validation
+  // Account validation
   if (!formData.email.trim()) {
     errors.email = t('auth.emailRequired')
     isValid = false
-  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+  } else if (!localLogin.enabled && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
     errors.email = t('auth.invalidEmail')
     isValid = false
   }
@@ -544,7 +560,7 @@ function validateForm(): boolean {
   if (!formData.password) {
     errors.password = t('auth.passwordRequired')
     isValid = false
-  } else if (formData.password.length < 6) {
+  } else if (!localLogin.enabled && formData.password.length < 6) {
     errors.password = t('auth.passwordMinLength')
     isValid = false
   }
@@ -578,7 +594,10 @@ async function handleLogin(): Promise<void> {
   try {
     // Call auth store login（阿里云 captchaVerifyParam 复用 turnstile_token 字段）
     const response = await authStore.login({
-      email: formData.email,
+      email:
+        localLogin.enabled && formData.email.trim() === localLogin.account
+          ? localLogin.email
+          : formData.email,
       password: formData.password,
       turnstile_token:
         turnstileEnabled.value || aliyunCaptchaEnabled.value ? turnstileToken.value : undefined,

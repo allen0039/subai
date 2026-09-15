@@ -743,6 +743,21 @@ const customMenuItemsForAdmin = computed(() => {
 
 // Admin navigation items
 const adminNavItems = computed((): NavItem[] => {
+  // Private/simple deployments use a fixed, task-oriented navigation. Keep
+  // commercial and monitoring modules reachable only in standard mode so the
+  // daily admin surface stays focused on operating the upstream gateway.
+  if (authStore.isSimpleMode) {
+    return [
+      { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon },
+      { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
+      { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon },
+      { path: '/admin/proxies', label: t('nav.proxies'), icon: ServerIcon },
+      { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
+      { path: '/admin/usage', label: t('nav.usage'), icon: ChartIcon },
+      { path: '/admin/settings', label: t('nav.settings'), icon: CogIcon },
+    ]
+  }
+
   const baseItems: NavItem[] = [
     { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon },
     { path: '/admin/ops', label: t('nav.ops'), icon: ChartIcon, featureFlag: flagOpsMonitoring },
@@ -806,17 +821,6 @@ const adminNavItems = computed((): NavItem[] => {
   ]
 
   const visible = applyFeatureFlags(baseItems)
-
-  // 简单模式下，在系统设置前插入 API密钥
-  if (authStore.isSimpleMode) {
-    const filtered = visible.filter(item => !item.hideInSimpleMode)
-    filtered.push({ path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon })
-    filtered.push({ path: '/admin/settings', label: t('nav.settings'), icon: CogIcon })
-    for (const cm of customMenuItemsForAdmin.value) {
-      filtered.push({ path: `/custom/${cm.id}`, label: cm.label, icon: null, iconSvg: cm.icon_svg })
-    }
-    return filtered
-  }
 
   visible.push({ path: '/admin/settings', label: t('nav.settings'), icon: CogIcon })
   for (const cm of customMenuItemsForAdmin.value) {

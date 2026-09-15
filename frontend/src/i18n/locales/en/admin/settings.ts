@@ -7,6 +7,7 @@ export default {
         agreement: 'Agreement',
         features: 'Feature Switches',
         security: 'Security',
+        advanced: 'Advanced',
         users: 'Users',
         gateway: 'Gateway',
         email: 'Email',

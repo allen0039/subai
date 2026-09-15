@@ -2,8 +2,9 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import LoginView from '@/views/auth/LoginView.vue'
 
-const { getPublicSettingsMock, pushMock } = vi.hoisted(() => ({
+const { getPublicSettingsMock, loginMock, pushMock } = vi.hoisted(() => ({
   getPublicSettingsMock: vi.fn(),
+  loginMock: vi.fn(),
   pushMock: vi.fn()
 }))
 
@@ -50,7 +51,7 @@ vi.mock('vue-i18n', () => ({
 
 vi.mock('@/stores', () => ({
   useAuthStore: () => ({
-    login: vi.fn(),
+    login: (...args: unknown[]) => loginMock(...args),
     loginWithPasskey: vi.fn(),
     login2FA: vi.fn()
   }),
@@ -92,7 +93,9 @@ function mountLogin() {
 
 describe('LoginView registration entry', () => {
   beforeEach(() => {
+    vi.unstubAllEnvs()
     getPublicSettingsMock.mockReset()
+    loginMock.mockReset()
     pushMock.mockReset()
     getPublicSettingsMock.mockResolvedValue(publicSettings)
   })
@@ -114,5 +117,30 @@ describe('LoginView registration entry', () => {
     await flushPromises()
 
     expect(wrapper.text()).not.toContain('auth.signUp')
+  })
+
+  it('prefills and submits the local admin alias', async () => {
+    vi.stubEnv('VITE_LOCAL_LOGIN_ACCOUNT', 'admin')
+    vi.stubEnv('VITE_LOCAL_LOGIN_EMAIL', 'admin@sub2api.local')
+    vi.stubEnv('VITE_LOCAL_LOGIN_PASSWORD', 'admin')
+    loginMock.mockResolvedValue({})
+
+    const wrapper = mountLogin()
+    await flushPromises()
+
+    const account = wrapper.get('#email')
+    expect(account.attributes('type')).toBe('text')
+    expect((account.element as HTMLInputElement).value).toBe('admin')
+    expect((wrapper.get('#password').element as HTMLInputElement).value).toBe('admin')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(loginMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'admin@sub2api.local',
+        password: 'admin'
+      })
+    )
   })
 })

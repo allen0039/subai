@@ -306,9 +306,11 @@ export const useAuthStore = defineStore('auth', () => {
       localStorage.setItem(REFRESH_TOKEN_KEY, response.refresh_token)
     }
 
-    // Extract run_mode if present
-    if (response.user.run_mode) {
-      runMode.value = response.user.run_mode
+    // Newer API responses expose the deployment mode at the response level;
+    // keep the nested field for compatibility with older server releases.
+    const responseRunMode = response.run_mode || response.user.run_mode
+    if (responseRunMode) {
+      runMode.value = responseRunMode
     }
     const { run_mode: _run_mode, ...userData } = response.user
     user.value = userData

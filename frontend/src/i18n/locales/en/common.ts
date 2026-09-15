@@ -237,6 +237,8 @@ export default {
     registrationDisabled: 'Registration is currently disabled. Please contact the administrator.',
     emailLabel: 'Email',
     emailPlaceholder: 'Enter your email',
+    accountLabel: 'Account',
+    accountPlaceholder: 'Enter your account',
     passwordLabel: 'Password',
     passwordPlaceholder: 'Enter your password',
     createPasswordPlaceholder: 'Create a strong password',

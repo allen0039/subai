@@ -237,6 +237,8 @@ export default {
     registrationDisabled: '注册功能暂时关闭，请联系管理员。',
     emailLabel: '邮箱',
     emailPlaceholder: '请输入邮箱',
+    accountLabel: '账号',
+    accountPlaceholder: '请输入账号',
     passwordLabel: '密码',
     passwordPlaceholder: '请输入密码',
     createPasswordPlaceholder: '创建一个安全的密码',
